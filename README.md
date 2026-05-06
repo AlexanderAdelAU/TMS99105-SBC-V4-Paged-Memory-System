@@ -31,6 +31,8 @@ Cross-page calls are plain `BL`/`RT`. The programmer writes normal code. The lin
 0xE800-0xEFFF   MAP_WIN   6116 mapping table (read/write)
 0xF000-0xFFFF   ROM       always present
 ```
+### Schematic
+
 
 ### Physical Memory Layout
 
