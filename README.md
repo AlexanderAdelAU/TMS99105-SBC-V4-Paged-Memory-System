@@ -1,4 +1,4 @@
-# TMS99105 SBC V4 — Transparant Paged Memory System
+# TMS99105 SBC V4 — Transparent Paged Memory System
 
 A transparent memory mapper for the TMS99105 single-board computer using a GAL22V10 and a 6116 SRAM — no 74LS612 required.
 
