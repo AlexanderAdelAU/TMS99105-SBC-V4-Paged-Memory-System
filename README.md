@@ -32,6 +32,8 @@ Cross-page calls are plain `BL`/`RT`. The programmer writes normal code. The lin
 0xF000-0xFFFF   ROM       always present
 ```
 ### Schematic
+This is an extract from the full TMS99105 schematic which is part of that repository.
+<img src="Schematic.png" alt="System Schematic" width="900">
 
 
 ### Physical Memory Layout
