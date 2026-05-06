@@ -1,4 +1,4 @@
-# TMS99105 SBC V4 — Transparent Paged Memory System
+# TMS99105 SBC V4 — Transparant Paged Memory System
 
 A transparent memory mapper for the TMS99105 single-board computer using a GAL22V10 and a 6116 SRAM — no 74LS612 required.
 
@@ -10,6 +10,12 @@ Cross-page calls are plain `BL`/`RT`. The programmer writes normal code. The lin
 
 ---
 
+## Schematic
+
+A partial schematic is shown to focus on the memory mapping component of the 99105 SBC which can be see as part of that repository.
+
+<img src="schematic.png" alt="System Schematic" width="900">
+
 ## Hardware
 
 ### CPU and Memory
@@ -18,7 +24,7 @@ Cross-page calls are plain `BL`/`RT`. The programmer writes normal code. The lin
 |-----------|-------------|
 | CPU | TMS99105 at 16MHz, big-endian (A0=MSB) |
 | Main RAM | 2× HM628512BFP-5 (512KB each, word-wide) |
-| Mapper RAM | 6116 SRAM — 16-entry mapping table |
+| Mapper RAM | 6116 SRAM — 16-entry mapping table (high byte only; low byte unpopulated, reserved for expansion) |
 | Latch | 74LS373 — isolates 6116 D4-D7 from main bus |
 | Address decode | GAL22V10 (U39) |
 | ROM | 27C32 at 0xF000-0xFFFF |
@@ -31,10 +37,6 @@ Cross-page calls are plain `BL`/`RT`. The programmer writes normal code. The lin
 0xE800-0xEFFF   MAP_WIN   6116 mapping table (read/write)
 0xF000-0xFFFF   ROM       always present
 ```
-### Schematic
-This is an extract from the full TMS99105 schematic which is part of that repository.
-<img src="Schematic.png" alt="System Schematic" width="900">
-
 
 ### Physical Memory Layout
 
@@ -75,8 +77,8 @@ The 6116 at MAP_WIN (0xE800-0xE80F) holds 16 bytes — one per virtual segment. 
 To map virtual segment 3 to physical page 7:
 ```asm
 LI      R0, 0700H       ; page 7 in high byte (MOVB writes high byte)
-LI      R9, 0E803H      ; MAP_WIN + segment 3
-MOVB    R0, *R9         ; program the 6116
+LI      R9, 0E806H      ; MAP_WIN + (segment 3 * 2) — word-wide entries
+MOVB    R0, *R9         ; program the 6116 (high byte only)
 ```
 
 ### The GAL Equations
