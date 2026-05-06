@@ -11,7 +11,6 @@ Cross-page calls are plain `BL`/`RT`. The programmer writes normal code. The lin
 ---
 
 ## Schematic
-
 A partial schematic is shown to focus on the memory mapping component of the 99105 SBC which can be see as part of that repository.
 
 <img src="Schematic.png" alt="System Schematic" width="900">
