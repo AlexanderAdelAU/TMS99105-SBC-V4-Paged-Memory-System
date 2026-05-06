@@ -1,4 +1,4 @@
-# TMS99105 SBC V4 — Transparent Paged Memory System
+# TMS99105 SBC V4 — TransparentPaged Memory System
 
 A transparent memory mapper for the TMS99105 single-board computer using a GAL22V10 and a 6116 SRAM — no 74LS612 required.
 
@@ -72,7 +72,7 @@ Segment 15   0xF000-0xFFFF   ROM — ROM_SEL fires, SA never asserted
 
 ### The 6116 Mapping Table
 
-The 6116 at MAP_WIN (0xE800-0xE80F) holds 16 bytes — one per virtual segment. Each byte contains the physical page number (0-15) that segment maps to. Entry 0 is ignored for COMMON; entry 15 is not used for ROM.
+The 6116 at MAP_WIN (0xE800-0xE81E) holds 16 word-wide entries — one per virtual segment, at even addresses (0xE800, 0xE802 ... 0xE81E). The physical page number (0-15) is written in the high byte of each word via MOVB. Entry 0 is ignored for COMMON; entry 15 is not used for ROM.
 
 To map virtual segment 3 to physical page 7:
 ```asm
@@ -121,7 +121,7 @@ This ensures SA0-SA3 remain stable throughout the memory cycle even as the data 
 ### 6116 Layout
 
 ```
-0xE800-0xE80F   16 map registers (segment 0-15 → physical page)
+0xE800-0xE81E   16 map registers (segment 0-15 → physical page, word-wide, even addresses only)
 0xE810-0xEFFF   OS control structures (page map table, free)
 ```
 
@@ -186,17 +186,17 @@ The ROM clears all map registers on startup. To set them manually:
 ```asm
 ;--- Clear all 16 entries to page 0 ---
         CLR     R0              ; page 0 value
-        LI      R9, 0E800H      ; MAP_WIN base
+        LI      R9, 0E800H      ; MAP_WIN base (word-wide, INCT per entry)
         LI      R1, 16
 CLRLOOP:
         MOVB    R0, *R9         ; MOVB writes high byte
-        INC     R9
+        INCT    R9
         DEC     R1
         JNE     CLRLOOP
 
 ;--- Map segment 3 to page 1 ---
         LI      R0, 0100H       ; page 1 in high byte
-        LI      R9, 0E803H      ; entry for segment 3
+        LI      R9, 0E806H      ; MAP_WIN + (segment 3 * 2)
         MOVB    R0, *R9
 ```
 
@@ -241,7 +241,7 @@ Poison page 0 at the target address before copying to page 1. If the wrong page 
 
 ```asm
 ;--- Write garbage to page 0 at 0x3000 (mapping disabled for segment 3) ---
-        LI      R0, 0E803H
+        LI      R0, 0E806H      ; MAP_WIN + (segment 3 * 2)
         LI      R1, 0000H       ; segment 3 → page 0
         MOVB    R1, *R0
 
