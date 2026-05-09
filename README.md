@@ -122,6 +122,33 @@ This ensures SA0-SA3 remain stable throughout the memory cycle even as the data 
 ```
 0xE800-0xE81E   16 map registers (segment 0-15 → physical page, word-wide, even addresses only)
 0xE810-0xEFFF   OS control structures (page map table, free)
+
+Active during /MEM=0 only
+·
+A0 = MSB (bit 15), A4 = bit 11
+·
+All outputs active-low except WAIT
+address	A0	A1	A2	A3	A4	region	/ROM_SEL	/RAM_SEL	/MAP_SEL	WAIT	SA[3:0]
+0x0000–0x0FFF	0	0	0	0	x	COMMON	0 ▲	0 ▲	0 ▲	1	0000
+0x1000–0x1FFF	0	0	0	1	x	PAGED	0 ▲	0 ▲	0 ▲	1	D[7:4]
+0x2000–0x2FFF	0	0	1	0	x	PAGED	0 ▲	0 ▲	0 ▲	1	D[7:4]
+0x3000–0x3FFF	0	0	1	1	x	PAGED	0 ▲	0 ▲	0 ▲	1	D[7:4]
+0x4000–0x4FFF	0	1	0	0	x	PAGED	0 ▲	0 ▲	0 ▲	1	D[7:4]
+0x5000–0x5FFF	0	1	0	1	x	PAGED	0 ▲	0 ▲	0 ▲	1	D[7:4]
+0x6000–0x6FFF	0	1	1	0	x	PAGED	0 ▲	0 ▲	0 ▲	1	D[7:4]
+0x7000–0x7FFF	0	1	1	1	x	PAGED	0 ▲	0 ▲	0 ▲	1	D[7:4]
+0x8000–0x8FFF	1	0	0	0	x	PAGED	0 ▲	0 ▲	0 ▲	1	D[7:4]
+0x9000–0x9FFF	1	0	0	1	x	PAGED	0 ▲	0 ▲	0 ▲	1	D[7:4]
+0xA000–0xAFFF	1	0	1	0	x	PAGED	0 ▲	0 ▲	0 ▲	1	D[7:4]
+0xB000–0xBFFF	1	0	1	1	x	PAGED	0 ▲	0 ▲	0 ▲	1	D[7:4]
+0xC000–0xCFFF	1	1	0	0	x	PAGED	0 ▲	0 ▲	0 ▲	1	D[7:4]
+0xD000–0xDFFF	1	1	0	1	x	PAGED	0 ▲	0 ▲	0 ▲	1	D[7:4]
+0xE000–0xE7FF	1	1	1	0	0	PAGED	0 ▲	0 ▲	0 ▲	1	D[7:4]
+0xE800–0xEFFF	1	1	1	0	1	MAP_WIN	0 ▲	1	0 ▲	1	0000
+0xF000–0xFFFF	1	1	1	1	x	ROM	0 ▲	1	1	1	0000
+Common — always page 0
+Paged RAM — SA driven by D7:D4
+Map window — writes 6116 table
 ```
 
 ---
