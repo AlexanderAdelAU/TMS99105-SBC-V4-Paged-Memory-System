@@ -14,6 +14,10 @@ the mapping table to allocate physical pages to logical segments.
 
 ---
 
+## Schematic
+
+<img src="Schematic.png" alt="Circuit Schematic" width="600">
+
 ## Conceptual Overview
 
 ### The Problem
