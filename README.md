@@ -14,10 +14,6 @@ the mapping table to allocate physical pages to logical segments.
 
 ---
 
-## Schematic
-
-<img src="Schematic.png" alt="Circuit Schematic" width="600">
-
 ## Conceptual Overview
 
 ### The Problem
@@ -46,6 +42,11 @@ page based on the mapping table. The CPU never knows or cares which
 physical page it is accessing.
 
 ---
+
+## Schematic
+Here is an extract from the main board of just the transparent memory mapper's implementation.
+
+<img src="Schematic.png" alt="Circuit Schematic" width="600">
 
 ## Physical Memory Layout
 
@@ -104,20 +105,31 @@ eliminates all of these problems.
 The GAL22V10D reads D4-D7 from the 6116 output (via the 74LS373 latch)
 and drives SA0-SA3 to the HM628512 physical address pins.
 
-### The 74LS373 Latch
+### Direct 6116 to GAL Connection
 The 6116 /OE is driven by /MRD — the 6116 only outputs data during read
-cycles. Between read cycles the 6116 outputs are Hi-Z. The 74LS373 latch
-sits between the 6116 and the GAL:
+cycles. Between read cycles the 6116 outputs are Hi-Z. D4-D7 connect
+directly from the 6116 to the GAL inputs:
 
 ```
-6116 D4-D7 → 74LS373 → GAL pins D4-D7
+6116 D4-D7 → GAL pins D4-D7 (direct)
 ```
 
-The 373 LE (latch enable) is driven directly by /MRD:
-- /MRD LOW  → 373 transparent → 6116 output passes through to GAL
-- /MRD HIGH → 373 holds       → last valid value held for GAL
+The registered outputs in the GAL capture D4-D7 on the /MRD rising edge,
+holding SA0-SA3 stable through write cycles and idle time when D4-D7
+would otherwise be Hi-Z.
 
-This ensures D4-D7 at the GAL are always stable and valid.
+### Critical: 6116 Address Pins A4-A11 Must Be Tied LOW
+The 6116 has address pins A0-A10 (2KB). Only A0-A3 are used to select
+the 16 segment page register entries. Pins A4-A10 must be tied permanently
+LOW:
+
+- If A4-A10 float or pick up noise during /MRD, the 6116 will address
+  a location outside the 16 page register entries
+- The data read will be random or zero rather than the correct page value
+- SA0-SA3 will be captured with the wrong value — wrong physical page
+
+Wire A4-A10 on the 6116 directly to GND. This is a hard requirement
+for correct mapper operation.
 
 ### Registered Outputs in the GAL
 SA0-SA3 are implemented as registered (flip-flop) outputs in the GAL,
@@ -287,7 +299,6 @@ Potential uses:
 |-----------|-----------|----------|
 | U44       | GAL22V10D | Address decode, SA0-SA3 registered outputs |
 | IC4       | 6116      | 16-entry mapping table, hidden CRU storage |
-| U26       | 74LS373   | D4-D7 latch — holds page value between /MRD pulses |
 | U45       | HM628512  | 512KB RAM high byte (x2 = 1MB word-wide) |
 | U31       | 74LS245   | CRU IODATA high byte bus buffer |
 | U23C      | 74LS00    | MAP_REG_SEL generation |
@@ -305,12 +316,12 @@ Potential uses:
 | 4   | Input     | A2         | CPU address bit 2 |
 | 5   | Input     | A3         | CPU address bit 3 |
 | 6   | Input     | A4         | CPU address bit 4 |
-| 7   | Input     | PIO_M_D4   | 6116 output bit 0 (via 373) |
-| 8   | Input     | PIO_M_D5   | 6116 output bit 1 (via 373) |
-| 9   | Input     | PIO_M_D6   | 6116 output bit 2 (via 373) |
+| 7   | Input     | PIO_M_D4   | 6116 output bit 0 (direct, A4-A10 tied LOW) |
+| 8   | Input     | PIO_M_D5   | 6116 output bit 1 (direct) |
+| 9   | Input     | PIO_M_D6   | 6116 output bit 2 (direct) |
 | 10  | Input     | MEM        | /MEM strobe |
 | 11  | Input     | PSEL       | Mapping enable (active low) |
-| 13  | Input     | PIO_M_D7   | 6116 output bit 3 (via 373) |
+| 13  | Input     | PIO_M_D7   | 6116 output bit 3 (direct) |
 | 14  | Output    | SA3        | Physical page bit 3 (registered) |
 | 15  | Output    | SA2        | Physical page bit 2 (registered) |
 | 16  | Output    | SA1        | Physical page bit 1 (registered) |
@@ -377,11 +388,12 @@ Writing the 6116 via memory cycles caused bus contention (6116 fighting
 the CPU data bus), required complex latch timing, and meant MAP_SET could
 only be called from COMMON. CRU writes use a completely separate bus.
 
-**Why not remove the 373?**
-The 373 bridges the gap between the 6116 /OE going Hi-Z at the end of
-/MRD and the GAL flip-flops clocking on the /MRD rising edge. Without it,
-the GAL inputs would be floating at exactly the moment they need to be
-captured.
+**Why no latch between 6116 and GAL?**
+The 373 latch was removed. The GAL registered outputs capture D4-D7
+directly from the 6116 on the /MRD rising edge. The 6116 /OE is asserted
+throughout the /MRD LOW period, so data is stable at the GAL inputs
+when the rising edge clocks the flip-flops. A4-A10 tied LOW ensures the
+correct page register entry is always addressed.
 
 **Why COMMON must initialise the mapper?**
 At power-on SA flip-flops hold random values. Any paged memory access
