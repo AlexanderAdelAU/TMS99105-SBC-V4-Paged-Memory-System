@@ -7,7 +7,7 @@ The TMS99105 SBC V4 implements a transparent paged memory system providing 1MB o
 ## Architecture
 
 ### Schematic
-![TMS99105 SBC V4 Schematic](schematic.png)
+![TMS99105 SBC V4 Schematic](Schematic.png)
 
 ### Memory Map
 ```
