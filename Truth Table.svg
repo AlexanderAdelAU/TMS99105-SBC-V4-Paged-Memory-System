@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="680" height="340" viewBox="0 0 680 340" xmlns="http://www.w3.org/2000/svg" font-family="Arial, sans-serif">
+<title>6116 mapper SRAM and PIOBUS 74LS245 truth table</title>
+<desc>Truth table showing 6116 and 74LS245 control signals for CRU write, CRU read, and memory access modes</desc>
+<defs>
+<marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+<path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+</marker>
+</defs>
+
+<!-- Background -->
+<rect width="680" height="340" fill="white"/>
+
+<!-- Title -->
+<text font-size="14" font-weight="500" x="340" y="26" text-anchor="middle" fill="#1a1a1a">6116 mapper SRAM and PIOBUS (74LS245) — control signal truth table</text>
+
+<!-- Column group headers -->
+<text font-size="14" font-weight="500" x="170" y="48" text-anchor="middle" fill="#1a1a1a">6116</text>
+<line x1="60" y1="52" x2="280" y2="52" stroke="#ccc" stroke-width="0.5"/>
+<text font-size="14" font-weight="500" x="360" y="48" text-anchor="middle" fill="#1a1a1a">Data flow</text>
+<text font-size="14" font-weight="500" x="530" y="48" text-anchor="middle" fill="#1a1a1a">PIOBUS (74LS245)</text>
+<line x1="430" y1="52" x2="640" y2="52" stroke="#ccc" stroke-width="0.5"/>
+
+<!-- Header row -->
+<rect x="20" y="56" width="640" height="34" rx="4" fill="#e8e6e0" stroke="#888" stroke-width="0.5"/>
+<text font-size="14" font-weight="500" x="80"  y="77" text-anchor="middle" fill="#1a1a1a">/CS</text>
+<text font-size="14" font-weight="500" x="150" y="77" text-anchor="middle" fill="#1a1a1a">/OE</text>
+<text font-size="14" font-weight="500" x="220" y="77" text-anchor="middle" fill="#1a1a1a">/WE</text>
+<text font-size="14" font-weight="500" x="360" y="77" text-anchor="middle" fill="#1a1a1a">direction</text>
+<text font-size="14" font-weight="500" x="490" y="77" text-anchor="middle" fill="#1a1a1a">R/W (DIR)</text>
+<text font-size="14" font-weight="500" x="590" y="77" text-anchor="middle" fill="#1a1a1a">/CE (PIOEN)</text>
+
+<!-- Row 1: CRU write to 6116 -->
+<rect x="20" y="96" width="640" height="54" rx="4" fill="#EEEDFE" stroke="#534AB7" stroke-width="0.5"/>
+<text font-size="14" font-weight="500" x="80"  y="116" text-anchor="middle" fill="#3C3489">L</text>
+<text font-size="14" font-weight="500" x="150" y="116" text-anchor="middle" fill="#3C3489">H</text>
+<text font-size="14" font-weight="500" x="220" y="116" text-anchor="middle" fill="#3C3489">L</text>
+<text font-size="12" x="80"  y="134" text-anchor="middle" fill="#534AB7">enabled</text>
+<text font-size="12" x="150" y="134" text-anchor="middle" fill="#534AB7">out disabled</text>
+<text font-size="12" x="220" y="134" text-anchor="middle" fill="#534AB7">write</text>
+<path d="M315 123 L405 123" stroke="#3C3489" stroke-width="1.5" fill="none" marker-end="url(#arrow)"/>
+<text font-size="12" x="360" y="115" text-anchor="middle" fill="#534AB7">CPU → 6116</text>
+<text font-size="14" font-weight="500" x="490" y="116" text-anchor="middle" fill="#3C3489">H  (A→B)</text>
+<text font-size="14" font-weight="500" x="590" y="116" text-anchor="middle" fill="#3C3489">L</text>
+<text font-size="12" x="490" y="134" text-anchor="middle" fill="#534AB7">CRU write LDCR</text>
+<text font-size="12" x="590" y="134" text-anchor="middle" fill="#534AB7">enabled</text>
+
+<!-- Row 2: CRU read from 6116 -->
+<rect x="20" y="156" width="640" height="54" rx="4" fill="#E1F5EE" stroke="#0F6E56" stroke-width="0.5"/>
+<text font-size="14" font-weight="500" x="80"  y="176" text-anchor="middle" fill="#085041">L</text>
+<text font-size="14" font-weight="500" x="150" y="176" text-anchor="middle" fill="#085041">L</text>
+<text font-size="14" font-weight="500" x="220" y="176" text-anchor="middle" fill="#085041">H</text>
+<text font-size="12" x="80"  y="194" text-anchor="middle" fill="#0F6E56">enabled</text>
+<text font-size="12" x="150" y="194" text-anchor="middle" fill="#0F6E56">out enabled</text>
+<text font-size="12" x="220" y="194" text-anchor="middle" fill="#0F6E56">no write</text>
+<path d="M405 183 L315 183" stroke="#085041" stroke-width="1.5" fill="none" marker-end="url(#arrow)"/>
+<text font-size="12" x="360" y="175" text-anchor="middle" fill="#0F6E56">6116 → CPU</text>
+<text font-size="14" font-weight="500" x="490" y="176" text-anchor="middle" fill="#085041">L  (A←B)</text>
+<text font-size="14" font-weight="500" x="590" y="176" text-anchor="middle" fill="#085041">L</text>
+<text font-size="12" x="490" y="194" text-anchor="middle" fill="#0F6E56">CRU read STCR</text>
+<text font-size="12" x="590" y="194" text-anchor="middle" fill="#0F6E56">enabled</text>
+
+<!-- Row 3: Memory access -->
+<rect x="20" y="216" width="640" height="54" rx="4" fill="#FAEEDA" stroke="#854F0B" stroke-width="0.5"/>
+<text font-size="14" font-weight="500" x="80"  y="236" text-anchor="middle" fill="#633806">L</text>
+<text font-size="14" font-weight="500" x="150" y="236" text-anchor="middle" fill="#633806">L</text>
+<text font-size="14" font-weight="500" x="220" y="236" text-anchor="middle" fill="#633806">H</text>
+<text font-size="12" x="80"  y="254" text-anchor="middle" fill="#854F0B">enabled</text>
+<text font-size="12" x="150" y="254" text-anchor="middle" fill="#854F0B">out enabled</text>
+<text font-size="12" x="220" y="254" text-anchor="middle" fill="#854F0B">no write</text>
+<text font-size="14" font-weight="500" x="360" y="243" text-anchor="middle" fill="#633806">—</text>
+<text font-size="14" font-weight="500" x="490" y="236" text-anchor="middle" fill="#633806">X</text>
+<text font-size="14" font-weight="500" x="590" y="236" text-anchor="middle" fill="#633806">H</text>
+<text font-size="12" x="490" y="254" text-anchor="middle" fill="#854F0B">SA0-SA3 drive RAM</text>
+<text font-size="12" x="590" y="254" text-anchor="middle" fill="#854F0B">disabled (Hi-Z)</text>
+
+<!-- Notes -->
+<text font-size="12" x="20" y="294" fill="#444">Memory access: 6116 /CS+/OE enabled so Q4-Q7 drive SA0-SA3 — 245 isolated (PIOEN=H) so no bus conflict</text>
+<text font-size="12" x="20" y="312" fill="#444">CRU cycles: 74LS157 SEL=L selects A11-A14 into 6116 address — 245 /CE=L connects PDIO to 6116 D0-D7</text>
+</svg>
