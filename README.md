@@ -1,406 +1,194 @@
-# TMS99105 SBC V4 - Transparent Paged Memory System
+# TMS99105 SBC V4 - Paged Memory System
 
-## Introduction
+## Overview
 
-The TMS99105 is a 16-bit CPU with a 64KB address space. To support larger programs
-and multitasking, the SBC V4 implements a transparent paged memory system that
-extends the addressable memory to 1MB without requiring application code to manage
-physical addresses directly.
+The TMS99105 SBC V4 implements a transparent paged memory system providing 1MB of physical RAM via two HM628512BFP-5 512KB SRAM chips (word-wide). The system divides the 64KB address space into 16 × 4KB segments, each independently mappable to one of 16 × 64KB physical pages.
 
-The design philosophy is transparency — application code uses normal memory
-addresses and the hardware automatically translates them to the correct physical
-location. From the application's perspective, memory simply works. The OS manages
-the mapping table to allocate physical pages to logical segments.
+## Architecture
 
----
-
-## Conceptual Overview
-
-### The Problem
-The TMS99105 can only directly address 64KB. A real operating system with a shell,
-BDOS, device drivers, and multiple applications needs far more than 64KB.
-
-### The Solution — Segmented Paging
-The 64KB address space is divided into 16 segments of 4KB each:
-
+### Memory Map
 ```
-Segment 0   0x0000-0x0FFF   COMMON  (always physical page 0)
-Segment 1   0x1000-0x1FFF   Paged
-Segment 2   0x2000-0x2FFF   Paged
-...
-Segment 15  0xF000-0xFFFF   ROM
+0x0000-0x0FFF  COMMON    Always page 0 - OS, workspace, XOP vectors
+0x1000-0xEFFF  PAGED TPA 14 × 4KB segments, independently mappable
+0xF000-0xFFFF  ROM       Monitor/OS in EPROM
 ```
 
-Each paged segment can be mapped to any one of 16 physical 64KB pages.
-With 1MB of physical RAM divided into 16 pages of 64KB each, the full
-1MB is addressable by remapping segments as needed.
+### Physical RAM
+- 2 × HM628512BFP-5 (512KB each, word-wide = 1MB total)
+- SA0-SA3 select physical page (0-15) within each chip
+- SA0 = MSB (TMS99105 big-endian convention)
 
-### Transparency
-The mapping is completely transparent to the CPU. When the CPU accesses
-address 0x2000, the hardware automatically selects the correct physical
-page based on the mapping table. The CPU never knows or cares which
-physical page it is accessing.
-
----
-
-## Schematic
-Here is an extract from the main board of just the transparent memory mapper's implementation.
-
-<img src="Schematic.png" alt="Circuit Schematic" width="600">
-
-## Physical Memory Layout
-
+### Mapper Hardware
 ```
-Two HM628512BFP-5 chips (512KB each, word-wide = 1MB total)
-
-Physical page 0   0x00000-0x0FFFF   64KB
-Physical page 1   0x10000-0x1FFFF   64KB
-...
-Physical page 15  0xF0000-0xFFFFF   64KB
-
-Total: 16 pages x 64KB = 1MB
+Component    Function
+─────────────────────────────────────────────────────────
+6116 SRAM    16 × 8-bit page registers (one per segment)
+74LS157      MUX: CRU address (A11-A14) or CPU address (A0-A3) → 6116
+GAL22V10     Address decode + SA0-SA3 registered outputs
 ```
 
-The physical page is selected by SA0-SA3 on the HM628512 address pins A0-A3.
-These four bits extend the 16-bit CPU address to a 20-bit physical address.
-
----
-
-## The Mapping Table (6116 SRAM)
-
-A 6116 2KB SRAM acts as the mapping table. It has 16 entries, one per segment:
-
+### GAL22V10 (U44) - Rev 24Q
+- **Clock**: 16MHz oscillator (TMS99105_CLKIN) on PIN 1
+  - 4× CPU clock ensures SA settles before /MWE asserts
+  - No dummy reads required in software
+- **SA equations**:
 ```
-Entry 0  (A0-A3 = 0000)  Page for segment 0  (always 0 — COMMON)
-Entry 1  (A0-A3 = 0001)  Page for segment 1
-Entry 2  (A0-A3 = 0010)  Page for segment 2
-...
-Entry 15 (A0-A3 = 1111)  Page for segment 15
+SA0.D = PIO_D4 & !PSEL & !IS_ROM;
+SA1.D = PIO_D5 & !PSEL & !IS_ROM;
+SA2.D = PIO_D6 & !PSEL & !IS_ROM;
+SA3.D = PIO_D7 & !PSEL & !IS_ROM;
 ```
+- PSEL LOW = mapping enabled, SA driven from 6116
+- PSEL HIGH = mapping disabled, SA = 0000 (page 0)
+- IS_ROM exclusion zeroes SA cleanly during ROM cycles
 
-The 6116 address pins A0-A3 are connected to the CPU address lines A0-A3
-(the top nibble of the 16-bit address, since TMS99105 is big-endian with A0=MSB).
-As the CPU executes, the 6116 continuously presents the page number for
-whatever segment is currently on the address bus.
-
-### Why CRU for Writing?
-The 6116 is written exclusively via the CRU (Communication Register Unit) —
-the TMS99105's dedicated I/O bus. This is critical:
-
-- CRU cycles do not assert /MEM — they are completely separate from memory cycles
-- No risk of bus contention between the 6116 and the RAM during writes
-- No risk of SA0-SA3 being corrupted during a map register write
-- Map registers can safely be updated from paged memory without disturbing
-  the current mapping
-
-Writing via memory (the original approach) caused the 6116 to fight the
-CPU data bus during write cycles, required complex latch timing, and meant
-that MAP_SET could only safely be called from COMMON. The CRU approach
-eliminates all of these problems.
-
----
-
-## How SA0-SA3 Are Generated
-
-The GAL22V10D reads D4-D7 from the 6116 output (via the 74LS373 latch)
-and drives SA0-SA3 to the HM628512 physical address pins.
-
-### Direct 6116 to GAL Connection
-The 6116 /OE is driven by /MRD — the 6116 only outputs data during read
-cycles. Between read cycles the 6116 outputs are Hi-Z. D4-D7 connect
-directly from the 6116 to the GAL inputs:
-
+### 6116 Mapper SRAM
 ```
-6116 D4-D7 → GAL pins D4-D7 (direct)
+/CS  = /RAM_SEL & /MAP_SEL (ANDed)
+/OE  = NOT(IOWR) via U38B
+/WE  = IOWR
+D4-D7 → GAL pins 7,8,9,13 (PIO_D4-PIO_D7)
+A0-A3 ← 74LS157 Y1-Y4 outputs
 ```
 
-The registered outputs in the GAL capture D4-D7 on the /MRD rising edge,
-holding SA0-SA3 stable through write cycles and idle time when D4-D7
-would otherwise be Hi-Z.
-
-### Critical: 6116 Address Pins A4-A11 Must Be Tied LOW
-The 6116 has address pins A0-A10 (2KB). Only A0-A3 are used to select
-the 16 segment page register entries. Pins A4-A10 must be tied permanently
-LOW:
-
-- If A4-A10 float or pick up noise during /MRD, the 6116 will address
-  a location outside the 16 page register entries
-- The data read will be random or zero rather than the correct page value
-- SA0-SA3 will be captured with the wrong value — wrong physical page
-
-Wire A4-A10 on the 6116 directly to GND. This is a hard requirement
-for correct mapper operation.
-
-### Registered Outputs in the GAL
-SA0-SA3 are implemented as registered (flip-flop) outputs in the GAL,
-clocked by /MRD rising edge (end of each read cycle):
-
+### 74LS157 MUX (U26)
 ```
-SA0.D = PIO_M_D4 & !PSEL & <paged address decode>
-SA1.D = PIO_M_D5 & !PSEL & <paged address decode>
-SA2.D = PIO_M_D6 & !PSEL & <paged address decode>
-SA3.D = PIO_M_D7 & !PSEL & <paged address decode>
+SEL=LOW  (MAP_SEL active)  → A inputs: A11-A14 (CRU write address)
+SEL=HIGH (normal memory)   → B inputs: A0-A3   (segment address)
 ```
 
-At the rising edge of /MRD:
-- The 6116 has been outputting valid data for the current address
-- The 373 has been transparently passing it to the GAL
-- The GAL flip-flops capture the correct page value
-- SA0-SA3 are held stable until the next /MRD rising edge
+### CRU Mapper Interface
+- Base address: **0x80C0H**
+- 16 registers at 80C0H, 80C2H ... 80DEH
+- Written via LDCR (2 bits, page value in high byte)
+- Read via STCR
 
-During write cycles (/MRD stays HIGH, /MWE asserts):
-- No /MRD rising edge → SA flip-flops hold their last value
-- The 6116 Hi-Z during /WE is irrelevant — SA is already latched
-- The RAM sees stable SA0-SA3 throughout the write cycle
+### PSEL (TMS99105 PIN 31)
+- LOW = paging enabled (SA driven from 6116)
+- HIGH = paging disabled (SA = 0000, flat memory)
+- Forced HIGH by: XOP, RTWP, interrupts, all I/O instructions
+- Controlled via XOP 2
 
-### Address Decode in SA.D Equations
-The SA.D equations include address decode terms that exclude:
-- COMMON (0x0000-0x0FFF): A0=A1=A2=A3=0 satisfies no term → SA captures 0
-- ROM (0xF000-0xFFFF): IS_ROM satisfies no term → SA captures 0
+## Programming Model
 
-During COMMON or ROM reads, the /MRD rising edge clocks SA=0 which is
-harmless — COMMON always maps to page 0, and ROM is not paged.
+### Initialisation
+```asm
+; Clear all page registers (all segments → page 0)
+BL      @MAP_CLR
 
----
-
-## PSEL — Mapping Enable/Disable
-
-PSEL is a bit in the TMS99105 status register, output on a dedicated pin.
-It controls whether mapping is active:
-
-```
-PSEL LOW  = mapping enabled  — SA0-SA3 driven from 6116 values
-PSEL HIGH = mapping disabled — SA0-SA3 forced zero (all segments = page 0)
+; Enable paging - leave enabled throughout application
+LI      R9, 0100H
+PSEL    R9
 ```
 
-PSEL is managed by XOP2:
-- XOP2 with non-zero R9 → PSEL LOW  → mapping enabled
-- XOP2 with R9=0        → PSEL HIGH → mapping disabled
-
-Critically, when an XOP, interrupt, or ROM call occurs, the CPU switches
-to a new workspace which has PSEL HIGH in its status register. This
-automatically disables mapping during OS/ROM operations without any
-software intervention. The application's mapping state is preserved
-in its workspace and restored on RTWP.
-
----
-
-## Timing Walkthrough
-
-### Power-on and Initialisation
-```
-1. Reset: SA flip-flops = random, 6116 = random
-   (Harmless — /MEM not asserted, no RAM access yet)
-
-2. Dispatcher runs at 0x0400 (COMMON, PSEL=HIGH):
-   For each segment 0-15:
-     LDCR 0x0000, 8    writes 0x0000 to 6116 entry via CRU
-   All entries now = page 0
-
-3. PSEL goes LOW (XOP2, R9 non-zero):
-   SA equations now active
-
-4. Dispatcher branches to 0x1000:
-   First /MRD from 0x1000 (segment 1):
-     6116 A0-A3 = 0001 → outputs entry 1 = 0x0000
-     373 transparent → D4-D7 = 0 at GAL
-     /MRD rising edge → SA captures 0 → page 0 ✓
-   CPU fetches from physical page 0 at 0x1000 ✓
+### Page Register Setup
+```asm
+; MAP_SET - Entry: R9=segment, R0=page
+MAP_SET:
+    LI      MAP_PORT, 80C0H
+    SLA     R9, 1           ; segment * 2
+    A       R9, MAP_PORT    ; point to register
+    SLA     R0, 8           ; page to high byte
+    LDCR    R0, 2           ; write to 6116
+    RT
 ```
 
-### Normal Execution
-```
-CPU fetches instruction from 0xC000 (segment 12, Shell):
-  6116 A0-A3 = 1100 → outputs segment 12's page entry
-  373 transparent during /MRD → D4-D7 valid
-  /MRD rising edge → SA captures page value
-  RAM_SEL asserts → HM628512 responds with correct physical page
-```
+### Accessing Paged Memory
+```asm
+; Set page register
+LI      R9, 2       ; segment 2
+LI      R0, 5       ; page 5
+BL      @MAP_SET
 
-### Remapping a Segment
-```
-OS remaps segment 3 to page 5:
-  LDCR 0x0500, 8    (page 5 in high byte, CRU write)
-  6116 entry 3 now = 0x05
+; Enable paging (once at startup - leave enabled)
+LI      R9, 0100H
+PSEL    R9
 
-Next /MRD from segment 3:
-  6116 A0-A3 = 0011 → outputs 0x05
-  373 → D4-D7 = 0000 0101
-  /MRD rising edge → SA0=1, SA2=1, SA1=SA3=0 → page 5 ✓
+; Access paged memory transparently
+LI      R2, 2000H   ; segment 2 base address
+MOV     *R2, R1     ; read from segment 2, page 5
+MOV     R1, *R2     ; write to segment 2, page 5
 ```
 
----
+### Best Practices
+- Enable PSEL **once at startup** — leave it enabled
+- Never toggle PSEL within an application
+- Do not disable PSEL immediately after a write — allow instructions to complete
+- Only disable PSEL in EXIT/cleanup routines
+- Segment 0 (COMMON) always maps to page 0 — never remap it
+- Segment 15 (ROM region) always set to page 0
 
-## COMMON — The Unbanked Region
-
-Segment 0 (0x0000-0x0FFF) is COMMON — it is always mapped to physical
-page 0 and cannot be remapped. The address decode in the SA.D equations
-means COMMON addresses never fire any SA term, so SA captures 0 = page 0.
-
-COMMON is used for:
-- System stack and workspace registers
-- Interrupt vectors
-- OS dispatcher and MAP_INIT routines
-- Any code that must remain accessible regardless of mapping state
-
-**Critical rule:** MAP_INIT must always run from COMMON (or ROM). The
-dispatcher at 0x0400 handles this. Applications at 0x1000 can assume
-the mapper is correctly initialised on entry.
-
----
-
-## Memory Map
-
+## Address Decoder (U30B 74LS139)
 ```
-0x0000-0x0FFF   COMMON    RAM_SEL  Always physical page 0
-0x0400          Dispatcher (MAP_INIT + jump to TPA)
-0x1000-0xEFFF   Paged TPA RAM_SEL  SA from 6116 when PSEL LOW
-0xF000-0xFFFF   ROM       ROM_SEL
+Base 0x8000H, decoded by A8/A9:
+00H (0x8000) → unused
+40H (0x8040) → IDE_SELECT
+80H (0x8080) → unused  
+C0H (0x80C0) → MAP_SEL (mapper CRU base)
 ```
 
-### Typical OS Layout
+## Test Utility - MAPDEBUG
+
+Load at 0x0500. Parameters at fixed addresses:
 ```
-Segment 0   0x0000  COMMON    OS workspace, stack, dispatcher
-Segment 1   0x1000  TPA start Application code page 1
-...
-Segment 12  0xC000  Shell
-Segment 13  0xD000  BDOS
-Segment 14  0xE000  Reserved OS
-Segment 15  0xF000  ROM
+0502: COMMAND
+0504: SEG_PAGE   HIGH=PAGE(0-15)  LOW=SEG(0-15)
+0506: VALUE      write value (CMD 5)
 ```
 
----
+### Commands
+```
+1=PSEL_EN   Enable mapping
+2=PSEL_DIS  Disable mapping
+3=SMREG     Set map register + verify (0504=SEG:PAGE)
+4=RMREG     Read map register (0504=SEG:PAGE)
+5=WPGSEG    Write value to SEG:PAGE (0504=SEG:PAGE 0506=VAL)
+6=RPGSEG    Read from SEG:PAGE (0504=SEG:PAGE)
+7=MAP_CLR   Initialise - set all segments to page 0
+8=MAP_LST   List all map registers
+9=RDLOOP    Continuous read loop (reset to exit)
+A=PGLOOP    Cycle all pages on segment (reset to exit)
+B=HELP      Help
+C=SETALL    Set seg N = page N for segs 0-14, seg15=page0
+D=SCYC      PSEL boundary cycle for scope analysis (reset to exit)
+E=INIT      Init segs 0-14 = seg N, seg15=page0
+F=CODE      Cross-page code execution test
+```
 
-## Hidden CRU Storage in the 6116
+### Test Sequence
+```
+; Prove page isolation:
+E 0502 0007 / 500G          ; clear all registers
+E 2000 1234                 ; write 1234 to page 0 seg 2
+E 0502 0005
+E 0504 0102                 ; seg 2, page 1
+E 0506 A5A5 / 500G          ; write A5A5 to page 1
+E 0502 0006 / 500G          ; read back - should be A5A5
+2000                        ; page 0 should still be 1234
 
-The 6116 is a 2KB SRAM. Only A0-A3 are used for the 16 page registers.
-Address bits A4-A10 provide 2032 bytes of completely hidden storage,
-accessible only via CRU read/write (STCR/LDCR).
-
-Properties:
-- Invisible to normal memory accesses, DMA, and memory scans
-- Cannot be read or written by application code using normal MOV instructions
-- Only accessible to code that knows the CRU base address
-- Survives across PSEL changes and context switches
-- Acts as a secure private scratchpad for the OS
-
-Potential uses:
-- Process control blocks (PCBs) for multitasking
-- OS mapping tables separate from user-accessible memory
-- Security tokens or session keys
-- Hardware configuration registers
-- Persistent state across warm resets (with battery backup)
-
----
+; Code execution test:
+E 0502 000F / 500G          ; RESULT:BEEF PASS
+```
 
 ## Hardware Summary
 
-| Component | Part      | Function |
-|-----------|-----------|----------|
-| U44       | GAL22V10D | Address decode, SA0-SA3 registered outputs |
-| IC4       | 6116      | 16-entry mapping table, hidden CRU storage |
-| U45       | HM628512  | 512KB RAM high byte (x2 = 1MB word-wide) |
-| U31       | 74LS245   | CRU IODATA high byte bus buffer |
-| U23C      | 74LS00    | MAP_REG_SEL generation |
-| U27A      | 74LS04    | Signal inversion |
+| Signal | Source | Destination | Function |
+|--------|--------|-------------|----------|
+| MAP_SEL | U30B pin 10 | U26 SEL, 6116 /CS | CRU mapper select |
+| RAM_SEL | GAL PIN 21 | 6116 /CS (ANDed) | RAM cycle select |
+| IOWR | U14 | 6116 /WE, /OE via U38B | CRU write strobe |
+| PIO_D4-D7 | 6116 Q4-Q7 | GAL PIN 7,8,9,13 | Page value to GAL |
+| SA0-SA3 | GAL PIN 17,16,15,14 | HM628512 A0-A3 | Physical page select |
+| PSEL | CPU PIN 31 | GAL PIN 11 | Mapping enable |
+| 16MHz CLK | Oscillator | GAL PIN 1 | SA register clock |
 
----
+## Revision History
 
-## GAL22V10D Pin Assignment (Rev 24A)
-
-| Pin | Direction | Signal     | Description |
-|-----|-----------|------------|-------------|
-| 1   | Input     | CLK        | /MRD — clocks SA flip-flops |
-| 2   | Input     | A0         | CPU address MSB |
-| 3   | Input     | A1         | CPU address bit 1 |
-| 4   | Input     | A2         | CPU address bit 2 |
-| 5   | Input     | A3         | CPU address bit 3 |
-| 6   | Input     | A4         | CPU address bit 4 |
-| 7   | Input     | PIO_M_D4   | 6116 output bit 0 (direct, A4-A10 tied LOW) |
-| 8   | Input     | PIO_M_D5   | 6116 output bit 1 (direct) |
-| 9   | Input     | PIO_M_D6   | 6116 output bit 2 (direct) |
-| 10  | Input     | MEM        | /MEM strobe |
-| 11  | Input     | PSEL       | Mapping enable (active low) |
-| 13  | Input     | PIO_M_D7   | 6116 output bit 3 (direct) |
-| 14  | Output    | SA3        | Physical page bit 3 (registered) |
-| 15  | Output    | SA2        | Physical page bit 2 (registered) |
-| 16  | Output    | SA1        | Physical page bit 1 (registered) |
-| 17  | Output    | SA0        | Physical page bit 0 (registered) |
-| 18  | Output    | NC         | Spare |
-| 19  | Output    | WAIT       | Wait state generator |
-| 20  | Output    | NC         | Spare |
-| 21  | Output    | RAM_SEL    | Active low RAM chip select |
-| 22  | Output    | ROM_SEL    | Active low ROM chip select |
-| 23  | Output    | NC         | Spare |
-
----
-
-## Test Utilities
-
-| Utility        | Load Address | Description |
-|----------------|--------------|-------------|
-| DISPATCH.A99   | 0x0400       | Mapper init + jump to TPA |
-| ALIASCHECK.A99 | 0x0500       | Proves page isolation — writes unique values to all pages then reads all back |
-| RAMTEST.A99    | 0x0500       | Comprehensive — cross-page alias check + 4-pattern test per page + linear |
-| MEMTEST.A99    | 0x0400+0x1000| RAMTEST running from paged memory via dispatcher |
-| CODETEST.A99   | 0x0500       | Writes unique subroutine to each page and executes it — proves code execution from correct page |
-| SEGTEST.A99    | 0x0500       | Segment isolation test |
-| SATEST.A99     | 0x1000       | SA0-SA3 logic analyser test with delays |
-
-### Running Tests
-```
-; From COMMON (recommended for diagnostics):
-500G
-
-; From paged memory via dispatcher:
-; Load DISPATCH at 0x0400, test at 0x1000
-400G
-```
-
----
-
-## GAL Revision History
-
-| Rev  | Status    | Key Change |
-|------|-----------|------------|
-| 08   | Obsolete  | Original with PSEL gating |
-| 09   | Obsolete  | Transparent mapping, PSEL removed |
-| 10   | Obsolete  | MAP_SEL gating on SA — proved wrong, blocked SA during RAM cycles |
-| 10A  | Obsolete  | MAP_SEL removed from SA — first working transparent version |
-| 12   | Obsolete  | !MEM removed from SA equations |
-| 13-22| Obsolete  | Various registered output and PIOEN experiments |
-| 23   | Obsolete  | Registered SA clocked by /MRD, OR gate removed |
-| 24   | Obsolete  | CRU write path introduced, MAP_WIN freed |
-| 24A  | CURRENT   | Registered SA /MRD clock, CRU write, PSEL gating |
-
----
-
-## Key Design Decisions and Lessons Learned
-
-**Why registered outputs?**
-The 6116 /OE is gated by /MRD — the 6116 only drives D4-D7 during read
-cycles. Between cycles D4-D7 are Hi-Z. Registered GAL outputs capture
-the correct value at the end of each read cycle and hold it stable
-through write cycles and idle time.
-
-**Why CRU writes?**
-Writing the 6116 via memory cycles caused bus contention (6116 fighting
-the CPU data bus), required complex latch timing, and meant MAP_SET could
-only be called from COMMON. CRU writes use a completely separate bus.
-
-**Why no latch between 6116 and GAL?**
-The 373 latch was removed. The GAL registered outputs capture D4-D7
-directly from the 6116 on the /MRD rising edge. The 6116 /OE is asserted
-throughout the /MRD LOW period, so data is stable at the GAL inputs
-when the rising edge clocks the flip-flops. A4-A10 tied LOW ensures the
-correct page register entry is always addressed.
-
-**Why COMMON must initialise the mapper?**
-At power-on SA flip-flops hold random values. Any paged memory access
-before MAP_INIT will use wrong physical pages. The dispatcher at 0x0400
-runs MAP_INIT from COMMON before any paged access occurs.
-
-**The 6116 hidden storage discovery**
-With A4-A10 of the 6116 unused by the page register function, 2032 bytes
-of SRAM are accessible only via CRU. This provides a naturally protected
-OS scratchpad area invisible to normal memory operations.
+| Rev | Key Change |
+|-----|------------|
+| 24A-24J | Various experiments with ALATCH, /MRD, /MEM clocking |
+| 24K | ALATCH as clock — baseline working |
+| 24L | IS_COMMON exclusion — did not work as expected |
+| 24M-24N | WAIT state experiments |
+| 24P | **16MHz oscillator as GAL clock — key breakthrough** |
+| 24Q | IS_ROM exclusion added — SA zeroed during ROM cycles |
