@@ -170,13 +170,4 @@ E 0502 000F / 500G          ; RESULT:BEEF PASS
 | PSEL | CPU PIN 31 | GAL PIN 11 | Mapping enable |
 | 16MHz CLK | Oscillator | GAL PIN 1 | SA register clock |
 
-## Revision History
 
-| Rev | Key Change |
-|-----|------------|
-| 24A-24J | Various experiments with ALATCH, /MRD, /MEM clocking |
-| 24K | ALATCH as clock — baseline working |
-| 24L | IS_COMMON exclusion — did not work as expected |
-| 24M-24N | WAIT state experiments |
-| 24P | **16MHz oscillator as GAL clock — key breakthrough** |
-| 24Q | IS_ROM exclusion added — SA zeroed during ROM cycles |
