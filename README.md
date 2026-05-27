@@ -113,22 +113,7 @@ MOV     *R2, R1     ; read from segment 2, page 5
 MOV     R1, *R2     ; write to segment 2, page 5
 ```
 
-### Best Practices
-- Enable PSEL **once at startup** — leave it enabled
-- Never toggle PSEL within an application
-- Do not disable PSEL immediately after a write — allow instructions to complete
-- Only disable PSEL in EXIT/cleanup routines
-- Segment 0 (COMMON) always maps to page 0 — never remap it
-- Segment 15 (ROM region) always set to page 0
 
-## Address Decoder (U30B 74LS139)
-```
-Base 0x8000H, decoded by A8/A9:
-00H (0x8000) → unused
-40H (0x8040) → IDE_SELECT
-80H (0x8080) → unused  
-C0H (0x80C0) → MAP_SEL (mapper CRU base)
-```
 
 ## Test Utility - MAPDEBUG
 
