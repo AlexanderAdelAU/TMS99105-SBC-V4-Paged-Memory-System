@@ -4,6 +4,8 @@
 
 The system uses a **6116 SRAM** as a page register file, programmed via CRU, with a **GAL22V10** generating the physical bank-select signals. The design is called "transparent" because page 0 maps every segment to its natural physical address — no initialisation is needed for common memory and the system boots safely without MAP_INIT.
 
+![Schematic](Schematic.png)
+
 ```
 CPU Address Bus (A0-A15)
         │
