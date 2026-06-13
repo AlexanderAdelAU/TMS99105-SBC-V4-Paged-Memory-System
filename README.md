@@ -34,114 +34,33 @@ GAL22V10     Address decode + SA0-SA3 registered outputs
 ```
 
 ### GAL22V10 (U44) - Rev 24Q
--Name     TMS9900_SBC_V4;
-PartNo   00;
-Date     06/05/26;
-Revision 24Q;
-Designer A. Cameron;
-Company  None;
-Assembly TMS99105 SBC;
-Location U44;
-Device   g22v10;
+# TMS99105 SBC Memory Management Unit (U44 GAL22V10)
 
-/*
-  TMS9900 SBC V4 - GAL22V10 Memory Management
-  TMS9900 BIG ENDIAN - A0 is MSB, A15 is LSB
+This directory hosts the logic equations and hardware specifications for the **GAL22V10 MMU / Memory Mapper** utilized in the TMS9900 Single Board Computer (SBC) Version 4 layout.
 
-  Rev 24: CRU write to 6116 mapper. 373 and MAP_WIN removed.
-    6116 written via CRU (LDCR/IOWR) - no memory bus involvement.
-    6116 /WE = IOWR
-    6116 /CS = CRU_EN (or GND if dedicated)
-    6116 /OE = MRD (outputs valid during read cycles)
-    6116 D4-D7 direct to GAL pins 7,8,9,13 (no 373 latch)
-    SA0-SA3 driven from PIO_D4-D7 gated by PSEL.
+## Memory Map Topology
 
-    PSEL LOW  = mapping enabled  - SA reflects 6116 output
-    PSEL HIGH = mapping disabled - SA forced zero (COMMON behaviour)
+The System MMU segments the 64KB address space of the TMS99105 processor into three operational spaces based on the high nibble of the address bus ($A_0 - A_3$):
 
-    0xE800-0xEFFF freed up - no longer MAP_WIN
-    No dummy reads needed
-    No 373 latch needed
-    No OR gate needed
-    Code can execute from paged memory
+| Address Range | Logic Name | Selection Line | Behavior / Paging Profile |
+|---|---|---|---|
+| `0x0000 - 0x0FFF` | `COMMON` | `RAM_SEL` active | Always locked to Physical Page 0 (`SA0-SA3 = 0`). Power-on safe. |
+| `0x1000 - 0xEFFF` | `PAGED` | `RAM_SEL` active | Paged via 6116 Mapper SRAM mapping when `PSEL` is LOW. |
+| `0xF000 - 0xFFFF` | `ROM` | `ROM_SEL` active | Routes to system ROM. Enforces Hardware `WAIT` states. |
 
-  Address regions:
-    COMMON  = !A0 & !A1 & !A2 & !A3  (0x0000-0x0FFF) always page 0
-    ROM     =  A0 &  A1 &  A2 &  A3  (0xF000-0xFFFF)
-    RAM     = everything else during MEM cycle
-*/
+*Note: The `0xE800 - 0xEFFF` range (`MAP_WIN`) from earlier revisions has been reclaimed and now acts as normal paged RAM.*
 
-/* ---- INPUT PINS ---- */
-PIN  1 =  CLK;          /* 16MHz oscillator - wire TMS99105_CLKIN    */
-PIN  2 =  A0;           /* CPU address bit 0 (MSB)                   */
-PIN  3 =  A1;           /* CPU address bit 1                         */
-PIN  4 =  A2;           /* CPU address bit 2                         */
-PIN  5 =  A3;           /* CPU address bit 3                         */
-PIN  6 =  A4;           /* CPU address bit 4                         */
-PIN  7 =  PIO_D4;     /* PIO data bus bit 4                        */
-PIN  8 =  PIO_D5;     /* PIO data bus bit 5                        */
-PIN  9 =  PIO_D6;     /* PIO data bus bit 6                        */
-PIN 10 = ALATCH;    /* Replaced !MEM with CPU Address Latch Strobe */
-PIN 11 =  PSEL;         /* page select (active low = mapping enabled)*/
-PIN 13 =  PIO_D7;     /* PIO data bus bit 7                        */
+---
 
-/* ---- OUTPUT PINS ---- */
-PIN 23 =  NC23;
-PIN 22 =  !ROM_SEL;     /* active low - ROM 0xF000-0xFFFF            */
-PIN 21 =  !RAM_SEL;     /* active low - RAM (COMMON + PAGED)         */
-PIN 20 =  !PSEL_G;         /* spare - MAP_WIN freed                     */
-PIN 19 =  WAIT;         /* active high - wait state                  */
-PIN 18 = ALATCH2;   /* Assigned to Pin 18 to clean up logic analyzer tracking */                                    
-PIN 17 =  SA0;          /* HM628512 A0 physical page bit 0           */
-PIN 16 =  SA1;          /* HM628512 A1 physical page bit 1           */
-PIN 15 =  SA2;          /* HM628512 A2 physical page bit 2           */
-PIN 14 =  SA3;          /* HM628512 A3 physical page bit 3           */
+## Hardware Architecture & Interface Strategy
 
-/* ---- INTERMEDIATE NODES ---- */
-IS_ROM    =  A0 &  A1 &  A2 &  A3;
+The V4 subsystem simplifies the mapping interconnect by utilizing a direct write-path strategy over the CRU (Communications Register Unit) bus, completely bypassing memory-bus buffer chips:
+* **Mapper SRAM (6116) Control:** * `/WE` connects to `IOWR`
+  * `/CS` loops to `CRU_EN` or `GND`
+  * `/OE` ties directly to `MRD` (Outputs driven cleanly during CPU reads)
+* **Eliminated Components:** No discrete transparent 74LS373 latches, external logic OR gates, or dedicated page-init registers are required. Code can safely execute out of paged memory dynamically.
 
-/* ---- COMMON NODES ---- */
-IS_COMMON    =  !A0 &  !A1 &  !A2 &  !A3;
-
-/* ---- EQUATIONS ---- */
-
-/* ROM: 0xF000-0xFFFF */
-ROM_SEL = IS_ROM;
-
-/* RAM: everything except ROM */
-RAM_SEL = !IS_ROM;
-
-
-/* WAIT: ROM only - RAM runs without wait states */
-WAIT = ROM_SEL;
-
-/* SA0-SA3: transparent mapping gated by PSEL
-   PSEL LOW  = mapping enabled  - SA driven from 6116 via PIO
-   PSEL HIGH = mapping disabled - SA forced zero
-   No MAP_WIN decode needed - 0xE800 is now normal RAM
-*/
-/* Clean internal 1-cycle delayed clock synchronization */
-ALATCH2.D = !ALATCH;
-
-/* PSEL Gated with our stabilized latch window */
-PSEL_G.D = !PSEL & ALATCH2;
-
-MAP_COND = PSEL_G & !IS_COMMON;
-/* IS_ROM exclusion keeps SA0-SA3 clean (zero) during ROM cycles */
-
-SA0.D = PIO_D4 & MAP_COND;
-
-SA1.D = PIO_D5 & MAP_COND;
-
-SA2.D = PIO_D6 & MAP_COND;
-
-SA3.D = PIO_D7 & MAP_COND;
-
-
-/* Unused outputs */
- NC23 = 'b'0; 
-/* NC20 = 'b'0; */
-
+---
 
 /*=========================================================
   MEMORY MAP
@@ -151,35 +70,6 @@ SA3.D = PIO_D7 & MAP_COND;
 
   0xE800-0xEFFF now normal paged RAM - MAP_WIN removed
 
-  HARDWARE:
-  6116 /WE  = IOWR
-  6116 /CS  = CRU_EN (or GND)
-  6116 /OE  = MRD
-  6116 D4-D7 direct to GAL pins 7,8,9,13
-  No 373 latch needed
-  No OR gate needed
-  PSEL ? GAL PIN 11
-
-  Rev 24C: COMMON hardware enforced via (A0#A1#A2#A3) term
-           Power-on safe - no MAP_INIT needed for COMMON
-  Rev 24B: Address terms removed - 6116 handles naturally
-  Rev 24A: Registered SA outputs clocked by /MRD (PIN 1)
-  Rev 24:  CRU write path, PSEL gating, MAP_WIN freed
-=========================================================*/
-
-### 6116 Mapper SRAM
-```
-/CS  = /RAM_SEL & /MAP_SEL (ANDed)
-/OE  = NOT(IOWR) via U38B
-/WE  = IOWR
-D4-D7 → GAL pins 7,8,9,13 (PIO_D4-PIO_D7)
-A0-A3 ← 74LS157 Y1-Y4 outputs
-```
-
-### 74LS157 MUX (U26)
-```
-SEL=LOW  (MAP_SEL active)  → A inputs: A11-A14 (CRU write address)
-SEL=HIGH (normal memory)   → B inputs: A0-A3   (segment address)
 ```
 
 ### CRU Mapper Interface
