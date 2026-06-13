@@ -39,10 +39,10 @@ GAL22V10     Address decode + SA0-SA3 registered outputs
   - No dummy reads required in software
 - **SA equations**:
 ```
-SA0.D = PIO_D4 & !PSEL & !IS_ROM;
-SA1.D = PIO_D5 & !PSEL & !IS_ROM;
-SA2.D = PIO_D6 & !PSEL & !IS_ROM;
-SA3.D = PIO_D7 & !PSEL & !IS_ROM;
+SA0.D = PIO_D4 & MAP_COND;
+SA1.D = PIO_D5 & MAP_COND;
+SA2.D = PIO_D6 & MAP_COND;
+SA3.D = PIO_D7 & MAP_COND;
 ```
 - PSEL LOW = mapping enabled, SA driven from 6116
 - PSEL HIGH = mapping disabled, SA = 0000 (page 0)
