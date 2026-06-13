@@ -34,19 +34,138 @@ GAL22V10     Address decode + SA0-SA3 registered outputs
 ```
 
 ### GAL22V10 (U44) - Rev 24Q
-- **Clock**: 16MHz oscillator (TMS99105_CLKIN) on PIN 1
-  - 4× CPU clock ensures SA settles before /MWE asserts
-  - No dummy reads required in software
-- **SA equations**:
-```
+-Name     TMS9900_SBC_V4;
+PartNo   00;
+Date     06/05/26;
+Revision 24Q;
+Designer A. Cameron;
+Company  None;
+Assembly TMS99105 SBC;
+Location U44;
+Device   g22v10;
+
+/*
+  TMS9900 SBC V4 - GAL22V10 Memory Management
+  TMS9900 BIG ENDIAN - A0 is MSB, A15 is LSB
+
+  Rev 24: CRU write to 6116 mapper. 373 and MAP_WIN removed.
+    6116 written via CRU (LDCR/IOWR) - no memory bus involvement.
+    6116 /WE = IOWR
+    6116 /CS = CRU_EN (or GND if dedicated)
+    6116 /OE = MRD (outputs valid during read cycles)
+    6116 D4-D7 direct to GAL pins 7,8,9,13 (no 373 latch)
+    SA0-SA3 driven from PIO_D4-D7 gated by PSEL.
+
+    PSEL LOW  = mapping enabled  - SA reflects 6116 output
+    PSEL HIGH = mapping disabled - SA forced zero (COMMON behaviour)
+
+    0xE800-0xEFFF freed up - no longer MAP_WIN
+    No dummy reads needed
+    No 373 latch needed
+    No OR gate needed
+    Code can execute from paged memory
+
+  Address regions:
+    COMMON  = !A0 & !A1 & !A2 & !A3  (0x0000-0x0FFF) always page 0
+    ROM     =  A0 &  A1 &  A2 &  A3  (0xF000-0xFFFF)
+    RAM     = everything else during MEM cycle
+*/
+
+/* ---- INPUT PINS ---- */
+PIN  1 =  CLK;          /* 16MHz oscillator - wire TMS99105_CLKIN    */
+PIN  2 =  A0;           /* CPU address bit 0 (MSB)                   */
+PIN  3 =  A1;           /* CPU address bit 1                         */
+PIN  4 =  A2;           /* CPU address bit 2                         */
+PIN  5 =  A3;           /* CPU address bit 3                         */
+PIN  6 =  A4;           /* CPU address bit 4                         */
+PIN  7 =  PIO_D4;     /* PIO data bus bit 4                        */
+PIN  8 =  PIO_D5;     /* PIO data bus bit 5                        */
+PIN  9 =  PIO_D6;     /* PIO data bus bit 6                        */
+PIN 10 = ALATCH;    /* Replaced !MEM with CPU Address Latch Strobe */
+PIN 11 =  PSEL;         /* page select (active low = mapping enabled)*/
+PIN 13 =  PIO_D7;     /* PIO data bus bit 7                        */
+
+/* ---- OUTPUT PINS ---- */
+PIN 23 =  NC23;
+PIN 22 =  !ROM_SEL;     /* active low - ROM 0xF000-0xFFFF            */
+PIN 21 =  !RAM_SEL;     /* active low - RAM (COMMON + PAGED)         */
+PIN 20 =  !PSEL_G;         /* spare - MAP_WIN freed                     */
+PIN 19 =  WAIT;         /* active high - wait state                  */
+PIN 18 = ALATCH2;   /* Assigned to Pin 18 to clean up logic analyzer tracking */                                    
+PIN 17 =  SA0;          /* HM628512 A0 physical page bit 0           */
+PIN 16 =  SA1;          /* HM628512 A1 physical page bit 1           */
+PIN 15 =  SA2;          /* HM628512 A2 physical page bit 2           */
+PIN 14 =  SA3;          /* HM628512 A3 physical page bit 3           */
+
+/* ---- INTERMEDIATE NODES ---- */
+IS_ROM    =  A0 &  A1 &  A2 &  A3;
+
+/* ---- COMMON NODES ---- */
+IS_COMMON    =  !A0 &  !A1 &  !A2 &  !A3;
+
+/* ---- EQUATIONS ---- */
+
+/* ROM: 0xF000-0xFFFF */
+ROM_SEL = IS_ROM;
+
+/* RAM: everything except ROM */
+RAM_SEL = !IS_ROM;
+
+
+/* WAIT: ROM only - RAM runs without wait states */
+WAIT = ROM_SEL;
+
+/* SA0-SA3: transparent mapping gated by PSEL
+   PSEL LOW  = mapping enabled  - SA driven from 6116 via PIO
+   PSEL HIGH = mapping disabled - SA forced zero
+   No MAP_WIN decode needed - 0xE800 is now normal RAM
+*/
+/* Clean internal 1-cycle delayed clock synchronization */
+ALATCH2.D = !ALATCH;
+
+/* PSEL Gated with our stabilized latch window */
+PSEL_G.D = !PSEL & ALATCH2;
+
+MAP_COND = PSEL_G & !IS_COMMON;
+/* IS_ROM exclusion keeps SA0-SA3 clean (zero) during ROM cycles */
+
 SA0.D = PIO_D4 & MAP_COND;
+
 SA1.D = PIO_D5 & MAP_COND;
+
 SA2.D = PIO_D6 & MAP_COND;
+
 SA3.D = PIO_D7 & MAP_COND;
-```
-- PSEL LOW = mapping enabled, SA driven from 6116
-- PSEL HIGH = mapping disabled, SA = 0000 (page 0)
-- IS_ROM exclusion zeroes SA cleanly during ROM cycles
+
+
+/* Unused outputs */
+ NC23 = 'b'0; 
+/* NC20 = 'b'0; */
+
+
+/*=========================================================
+  MEMORY MAP
+  0x0000-0x0FFF  COMMON  RAM_SEL  SA=0000 always page 0
+  0x1000-0xEFFF  PAGED   RAM_SEL  SA=PIO_D4-D7 when PSEL LOW
+  0xF000-0xFFFF  ROM     ROM_SEL
+
+  0xE800-0xEFFF now normal paged RAM - MAP_WIN removed
+
+  HARDWARE:
+  6116 /WE  = IOWR
+  6116 /CS  = CRU_EN (or GND)
+  6116 /OE  = MRD
+  6116 D4-D7 direct to GAL pins 7,8,9,13
+  No 373 latch needed
+  No OR gate needed
+  PSEL ? GAL PIN 11
+
+  Rev 24C: COMMON hardware enforced via (A0#A1#A2#A3) term
+           Power-on safe - no MAP_INIT needed for COMMON
+  Rev 24B: Address terms removed - 6116 handles naturally
+  Rev 24A: Registered SA outputs clocked by /MRD (PIN 1)
+  Rev 24:  CRU write path, PSEL gating, MAP_WIN freed
+=========================================================*/
 
 ### 6116 Mapper SRAM
 ```
