@@ -54,12 +54,7 @@ The System MMU segments the 64KB address space of the TMS99105 processor into th
 
 ## Hardware Architecture & Interface Strategy
 
-The V4 subsystem simplifies the mapping interconnect by utilizing a direct write-path strategy over the CRU (Communications Register Unit) bus, completely bypassing memory-bus buffer chips:
-* **Mapper SRAM (6116) Control:** * `/WE` connects to `IOWR`
-  * `/CS` loops to `CRU_EN` or `GND`
-  * `/OE` ties directly to `MRD` (Outputs driven cleanly during CPU reads)
-* **Eliminated Components:** No discrete transparent 74LS373 latches, external logic OR gates, or dedicated page-init registers are required. Code can safely execute out of paged memory dynamically.
-
+The V4 subsystem simplifies the mapping interconnect by utilizing a direct write-path strategy over the CRU (Communications Register Unit) bus, completely bypassing memory-bus buffer chips.
 ---
 
 /*=========================================================
@@ -124,8 +119,6 @@ LI      R2, 2000H   ; segment 2 base address
 MOV     *R2, R1     ; read from segment 2, page 5
 MOV     R1, *R2     ; write to segment 2, page 5
 ```
-
-
 
 ## Test Utility - MAPDEBUG
 
