@@ -1,140 +1,307 @@
-# TMS99105 SBC V4 — Transparent Memory Mapper
+# TMS99105 SBC Overlay Manager
 
-## Architecture
+![Paged Memory Mapper Schematic](Schematic.png)
 
-The system uses a **6116 SRAM** as a page register file, programmed via CRU, with a **GAL22V10** generating the physical bank-select signals. The design is called "transparent" because page 0 maps every segment to its natural physical address — no initialisation is needed for common memory and the system boots safely without MAP_INIT.
+*Schematic showing the GAL22V10 (U44) page mapper, 6116 mapper RAM (IC4), 74LS157 segment address multiplexer (U26), and CRU interface (U31). Note: when PSEL_G is high, SA0-SA3 are forced low — all segments map to physical page 0.*
 
-![Schematic](Schematic.png)
+## Overview
 
-```
-CPU Address Bus (A0-A15)
-        │
-        ├──► GAL22V10 ──► ROM_SEL  (0xF000-0xFFFF)
-        │              ──► RAM_SEL  (everything else)
-        │              ──► SA0-SA3  (physical bank select → HM628512)
-        │
-        └──► 6116 SRAM (page register file)
-                │
-                └── D4-D7 ──► GAL pins 7,8,9,13
-                    A0-A3 ◄── CRU address decode
-                    /WE   ◄── IOWR
-                    /CS   ◄── CRU_EN
-                    /OE   ◄── MRD
-```
+This document describes the overlay manager implementation for the TMS99105 SBC. Overlays allow programs larger than a single 4KB memory segment to run by swapping code segments in and out of a fixed virtual address window. This was developed as a proof of concept and stepping stone toward running the native C compiler, which is too large for a single segment.
 
-## Memory Map
+## Hardware — GAL22V10 Page Mapper
 
-| Range | Region | Behaviour |
-|---|---|---|
-| 0x0000–0x0FFF | COMMON | Always page 0 — forced transparent by GAL |
-| 0x1000–0xBFFF | PAGED | SA0-SA3 driven from 6116 when PSEL active |
-| 0xC000–0xFFFF | PROTECTED | Shell / BDOS / ROM — segments ≥ 12 bypass mapper |
+The SBC uses a GAL22V10 (U44) as a page mapper providing:
 
-## GAL22V10 Equations (Rev 24T)
+- 16 virtual segments × 4KB = 64KB virtual address space
+- 16 physical pages × 4KB = 64KB physical RAM (from 512KB HM628512)
+- CRU-based programming via `LDCR`/`STCR` at `MAP_WIN_BASE = 0x80C0`
+- PSEL controlled via ST7 in the status register (set by XOP 2 handler)
+
+### Memory Map
 
 ```
-IS_ROM     =  A0 &  A1 &  A2 &  A3;          /* 0xF000-0xFFFF         */
-IS_COMMON  = !A0 & !A1 & !A2 & !A3;          /* 0x0000-0x0FFF         */
-
-ROM_SEL    = IS_ROM;
-RAM_SEL    = !IS_ROM;
-
-PSEL_G.D   = !PSEL;                           /* registered — clocked  */
-
-/* SA lines active only outside COMMON and ROM, when PSEL enabled      */
-SA0.D = PIO_D4 & PSEL_G & (A0 # A1 # A2 # A3);
-SA1.D = PIO_D5 & PSEL_G & (A0 # A1 # A2 # A3);
-SA2.D = PIO_D6 & PSEL_G & (A0 # A1 # A2 # A3);
-SA3.D = PIO_D7 & PSEL_G & (A0 # A1 # A2 # A3);
+0x0000-0x00AF  Interrupt Vectors (7 user vectors at 0x00B0)
+0x00B0-0x012F  Interrupt Workspace (8 x 16 bytes)
+0x0130-0x022F  XOP Workspace (16 x 16 bytes)
+0x0230-0x04FF  Common Workspace, Command Line, FCB, Page Variables
+0x0280         Common Stack Pointer
+0x02A0         OVL_PRINT_VEC (overlay print callback vector)
+0x0500-0x06FF  STAGING buffer (sector I/O)
+0x1000-0xCFFF  TPA — Paged Program Area (page 0 by default)
+0xD000         SHELL
+0xE000         BDOS
+0xF000         ROM / DISC_MONITOR
 ```
 
-**PSEL LOW = mapping enabled.** SA0-SA3 follow 6116 outputs gated by PSEL_G.  
-**PSEL HIGH = mapping disabled.** SA0-SA3 forced to zero — all segments transparent.
-
-The `!IS_ROM` exclusion was removed (Rev 24T) to save product terms. ROM cycles never assert RAM_SEL so the SA state during ROM access is irrelevant.
-
-## 6116 Register File
-
-One 2-bit register per segment (16 segments × 2 bits = 32 CRU bits).
-
-| Signal | Connection |
-|---|---|
-| /WE | IOWR — written via LDCR |
-| /CS | CRU_EN |
-| /OE | MRD — outputs valid during read |
-| D4-D7 | Directly to GAL pins 7, 8, 9, 13 |
-| A0-A3 | Decoded from CRU address |
-
-CRU base address: **0x80C0**  
-Segment N register: CRU address `0x80C0 + N×2`
-
-## Programming the Registers
-
-### MAP_INIT — clear all segments to page 0
+### Key Equates
 
 ```asm
-MAP_INIT:
-    LI   R12, 080C0H     ; CRU base
-    CLR  R0              ; page 0
-    LI   R1, 16          ; 16 segments
-MAPI_L:
-    LDCR R0, 2           ; write 2-bit page value
-    INCT R12             ; next segment
-    DEC  R1
-    JNE  MAPI_L
-    RT
+MAP_WIN_BASE:   EQU  080C0H      ; CRU base for mapper registers
+BYTEWIDE:       EQU  2           ; CNT=2 = parallel byte transfer mode
+PSEL_EN:        EQU  0100H       ; non-zero = enable PSEL (any non-zero value)
+OVL_SEG:        EQU  2           ; virtual segment used for overlay slot
+OVL_CRU:        EQU  MAP_WIN_BASE+(OVL_SEG*2)  ; = 0x80C4
+OVL_PRINT_VEC:  EQU  02A0H       ; page variables area — print callback
+STAGING:        EQU  0500H       ; sector staging buffer
+FLATBASE:       EQU  1000H       ; flat program load address
 ```
 
-### MAP_SET — set one segment to a page
+## Programming the Mapper
+
+### LDCR/STCR in Parallel Mode
+
+On the TMS99105A, `LDCR`/`STCR` with `CNT=2` (`BYTEWIDE`) operate in **parallel byte transfer mode** — transferring a full byte, not 2 bits.
+
+- `LDCR Rsrc,BYTEWIDE` — writes the **high byte** of Rsrc to the CRU address in R12
+- `STCR Rdst,BYTEWIDE` — reads a byte from CRU into the **high byte** of Rdst
+
+To program a mapper register:
 
 ```asm
-; Entry: R9 = segment (0-15), R0 = page (0-3)
 MAP_SET:
-    LI   R12, 080C0H
-    SLA  R9, 1           ; segment × 2 = CRU bit offset
-    A    R9, R12
-    SLA  R0, 8           ; page to bits 15-14 for LDCR (MSB first)
-    LDCR R0, 2
+    ; Entry: R9 = segment number, R0 = physical page number
+    LI   R12,MAP_WIN_BASE       ; CRU base
+    SLA  R9,1                   ; segment * 2 = CRU bit offset
+    A    R9,R12                 ; R12 = CRU address for this segment
+    SLA  R0,8                   ; MOVE PAGE FROM LOW BYTE TO HIGH BYTE
+                                ; (LDCR BYTE TRANSFER USES HIGH BYTE)
+    LDCR R0,BYTEWIDE            ; program the mapper register
     RT
 ```
 
-### PSEL — enable / disable the mapper
-
-PSEL is **XOP 2**. R9 holds the control value.
+To read back a mapper register:
 
 ```asm
-LI   R9, 0100H   ; enable  (PSEL LOW via GAL)
-PSEL R9
-
-CLR  R9          ; disable (PSEL HIGH — all transparent)
-PSEL R9
+    LI   R12,OVL_CRU
+    STCR R1,BYTEWIDE            ; page number in HIGH BYTE of R1
+    ; R1 high byte now contains current page — use directly with LDCR
+    ; DO NOT SLA R1,8 again — it's already in the high byte
 ```
 
-XOP calls execute with PSEL temporarily transparent (the XOP handler is in ROM, segment 15, which is unprotected). The workspace is always in segment 0 (COMMON), so it remains visible regardless of mapper state.
+### PSEL Control
 
-## Loader Sequence (LOADERCODE)
+PSEL is controlled via XOP 2. The XOP 2 handler sets/clears ST7 (the map enable bit):
 
-When the shell loads a paged `.COM` file (link99 v3.9 format):
+```asm
+    ; Enable PSEL
+    LI   R9,PSEL_EN             ; any non-zero value
+    PSEL R9                     ; XOP 2 — sets ST7, enables mapping
 
-1. **MAP_INIT** — clear all registers to page 0
-2. **Read first sector** to TPA (0x0500)
-3. **Detect sentinel** — `FFFF FFFF FFFF` at file offset 6 identifies a paged file
-4. **Walk page map** — for each `[start, end, page]` entry call MAP_SET for every segment in range
-5. **Enable PSEL** — `LI R9, 0100H / PSEL R9`
-6. **Copy first sector** from staging buffer to paged virtual address
-7. **Additional sectors** — SETDMA to paged destination, RDSEQ writes directly into physical bank via mapper (BDOS passes DMA address unchanged)
-8. **Launch** — `CLR R15 / ORI R15, 0087H / LST R15 / B *R8`
-
-The launch address (R8) is saved from the page map start field before the copy loop advances R2.
-
-## link99 Paged File Format
-
-```
-[start:word][end:word][page:word]   ← page map entry (one per segment range)
-[FFFF][FFFF][FFFF]                  ← sentinel at byte offset 6
-[size:word]                         ← code block byte count
-[code data ...]                     ← relocatable code + data
+    ; Disable PSEL  
+    CLR  R9
+    PSEL R9                     ; XOP 2 — clears ST7, disables mapping
 ```
 
-Programs link with `-P<n>` to assign a page number (0-3).  
-Segments 0 (COMMON) and 12-15 (shell/ROM) are never remapped by the loader.
+**Important:** XOP entry clears ST7-ST11. The XOP 2 handler sets ST7 via `ORI` on the saved status before `RTWP`, so PSEL state is correctly restored on return.
+
+**Important:** With PSEL enabled (ST7=1), the processor is in **user mode**. Privileged instructions (`LWPI`, `LIMI`, `LST`) must only be executed with PSEL disabled or before PSEL is first enabled.
+
+## Overlay File Format
+
+Overlay COM files use a pagemap header so the loader knows where to place the code:
+
+```
+FFFF FFFF FFFF        opening sentinel (3 words)
+start  end   page     pagemap entry: virtual start, end, physical page
+FFFF FFFF FFFF        closing sentinel (3 words)
+size                  block size in bytes (1 word)
+[code bytes...]       overlay code
+```
+
+Example for OVLA (virtual 0x2000, physical page 2):
+```
+FFFF FFFF FFFF
+2000 2062 0002
+FFFF FFFF FFFF
+0062
+[62 hex bytes of code]
+```
+
+Overlays are assembled with `AORG` at the virtual address and linked with `-P` flag:
+
+```
+r99  OVLA SCHCLC
+link99 -P2 ovla.COM ovla.R99       ; page 2
+link99 -P3 ovlb.COM ovlb.R99       ; page 3
+```
+
+## Loading Overlays — DOLOAD Shell Command
+
+The shell `LOAD` command reads a COM file into paged memory without executing it:
+
+```
+%LOAD OVLA.COM      → loads OVLA into physical page 2 at virtual 0x2000
+%LOAD OVLB.COM      → loads OVLB into physical page 3 at virtual 0x2000
+```
+
+DOLOAD:
+1. Parses filename from command line
+2. Opens file, reads to STAGING (`0x0500`)
+3. Parses pagemap header — gets segment, page, block size
+4. Calls `MAP_SET` to program the mapper
+5. Enables PSEL, copies code from STAGING to virtual address
+6. Disables PSEL, returns to shell
+
+## Overlay Manager — OVLMGR
+
+OVLMGR is a relocatable module linked with the main program. It manages swapping overlays into the fixed virtual slot at `0x2000`.
+
+### OVL_PAGES Table
+
+```asm
+OVL_PAGES:
+    WORD  0         ; unused (index 0)
+    WORD  2         ; overlay A = physical page 2
+    WORD  3         ; overlay B = physical page 3
+
+CURRENT_OVL:
+    WORD  0         ; currently mapped overlay ID (0 = none)
+```
+
+### OVLMGR_INIT
+
+Call once at program startup:
+
+```asm
+    CALL  @OVLMGR_INIT     ; clears CURRENT_OVL, enables PSEL
+```
+
+### OVLMGR
+
+Call before each overlay function:
+
+```asm
+    LI    R1,OVL_A         ; overlay ID (1=A, 2=B)
+    CALL  @OVLMGR          ; swap if needed, re-enables PSEL on return
+```
+
+OVLMGR compares R1 to CURRENT_OVL — if already mapped, returns immediately. Otherwise:
+
+```asm
+OVLMGR:
+    C     R1,@CURRENT_OVL
+    JEQ   OVLMGR_RET       ; already loaded
+    MOV   R1,@CURRENT_OVL
+    MOV   R1,R3
+    SLA   R3,1             ; R3 = ID*2 (word offset) — NOTE: cannot index on R0
+    MOV   @OVL_PAGES(R3),R0 ; R0 = physical page number
+    SLA   R0,8             ; move page to high byte for LDCR
+    CLR   R9
+    PSEL  R9               ; disable PSEL before programming mapper
+    LI    R12,OVL_CRU      ; CRU address for segment 2
+    LDCR  R0,BYTEWIDE      ; program segment 2 → new page
+    LI    R9,PSEL_EN
+    PSEL  R9               ; re-enable PSEL
+OVLMGR_RET:
+    RET
+```
+
+**Note:** You cannot use R0 as an index register on TMS9900 — `MOV @TABLE(R0),R0` does not index. Use R3 or any other register.
+
+## Overlay Code Structure
+
+Each overlay is assembled at `AORG 2000H` with a fixed entry point table:
+
+```asm
+    AORG  2000H
+
+OVLA_FUNC1:  B  @OVLA_F1      ; 0x2000 — function 1 entry
+             NOP
+OVLA_FUNC2:  B  @OVLA_F2      ; 0x2004 — function 2 entry
+             NOP
+```
+
+## Calling Overlays from the Main Program
+
+### Print Callback Vector
+
+Overlays cannot directly call routines in the main program since their addresses are not known at overlay assembly time. A callback vector in COMMON solves this:
+
+```asm
+OVL_PRINT_VEC:  EQU  02A0H    ; page variables area
+```
+
+The main program installs the callback after `OVLMGR_INIT`:
+
+```asm
+    CALL  @OVLMGR_INIT
+    LI    R0,PRINT
+    MOV   R0,@OVL_PRINT_VEC   ; store PRINT address in common vector
+```
+
+The overlay calls it via register indirect — **load the address first, then call through the register**:
+
+```asm
+    MOV   @OVL_PRINT_VEC,R0   ; load PRINT address from vector
+    CALL  *R0                  ; call PRINT via register indirect
+```
+
+This is equivalent to a C function pointer: `(*print_func)(str)`.
+
+An alternative is a **trampoline** — store a `B` opcode and address at the vector location:
+```
+02A0: 0460   ; B opcode
+02A2: xxxx   ; PRINT address
+```
+Then `CALL @0x02A0` jumps through the trampoline with a single indirection.
+
+### CALL and RET
+
+Use `CALL` (XOP 6) and `RET` (XOP 7) throughout — they handle workspace and return address management correctly across paged boundaries:
+
+```asm
+    DXOP  CALL,6
+    DXOP  RET,7
+
+    CALL  @OVLMGR             ; call overlay manager
+    CALL  @OVL_FUNC1          ; call overlay function at 0x2000
+```
+
+Overlays return with `RET`:
+```asm
+OVLA_F1:
+    LI    R1,TXT_OVLA1
+    MOV   @OVL_PRINT_VEC,R0
+    CALL  *R0
+    RET                        ; return to caller
+```
+
+## Link Commands
+
+```
+link99 ovltest.COM ovltest.R99 ovlmgr.R99
+link99 -P2 ovla.COM ovla.R99
+link99 -P3 ovlb.COM ovlb.R99
+```
+
+## Complete Test Run
+
+```
+%LOAD OVLA.COM
+Loaded
+%LOAD OVLB.COM
+Loaded
+%OVLTEST
+Overlay POC Test Starting
+Test 1: A.Func1 (first load)
+Overlay A - Function 1
+Test 2: B.Func1 (swap A->B)
+Overlay B - Function 1
+Test 3: A.Func2 (swap B->A)
+Overlay A - Function 2
+Test 4: A.Func1 (no swap)
+Overlay A - Function 1
+Overlay POC Test COMPLETE
+%
+```
+
+## Key Lessons
+
+- `LDCR`/`STCR` with `CNT=2` on TMS99105A = **parallel byte transfer**, not 2-bit serial. Source byte is the **high byte** of the register — use `SLA R0,8` to move the value before `LDCR`.
+- `STCR` reads into the **high byte** — do not `SLA` again before a subsequent `LDCR`.
+- R0 cannot be used as an index register — `MOV @TABLE(R0),Rd` does not index. Use R3 or another register.
+- With PSEL enabled, the processor is in user mode (ST7=1). Execute privileged instructions only before enabling PSEL.
+- XOP calls (`CALL`, `WRITE`, `PSEL` etc) disable PSEL on entry. The XOP 2 handler restores PSEL state via the saved status register on `RTWP`.
+- A software vector holds an **address** — dereference it with `MOV @VEC,R0` / `CALL *R0`. Do not call the vector address directly.
+- `TEXT`/`BYTE` declarations must always be followed by `EVEN` before any `WORD` or code.
+- In the REL file format, a PREL with `field=0` means offset 0 within the module — it still needs `cmod` (module base) added during linking.
