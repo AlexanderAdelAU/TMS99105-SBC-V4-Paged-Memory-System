@@ -1,4 +1,4 @@
-# TMS99105 SBC Overlay Manager
+# TMS99105 SBC Transparent Paged Memory
 
 ![Paged Memory Mapper Schematic](Schematic.png)
 
