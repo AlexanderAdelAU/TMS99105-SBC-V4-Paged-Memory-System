@@ -294,14 +294,3 @@ Overlay A - Function 1
 Overlay POC Test COMPLETE
 %
 ```
-
-## Key Lessons
-
-- `LDCR`/`STCR` with `CNT=2` on TMS99105A = **parallel byte transfer**, not 2-bit serial. Source byte is the **high byte** of the register — use `SLA R0,8` to move the value before `LDCR`.
-- `STCR` reads into the **high byte** — do not `SLA` again before a subsequent `LDCR`.
-- R0 cannot be used as an index register — `MOV @TABLE(R0),Rd` does not index. Use R3 or another register.
-- With PSEL enabled, the processor is in user mode (ST7=1). Execute privileged instructions only before enabling PSEL.
-- XOP calls (`CALL`, `WRITE`, `PSEL` etc) disable PSEL on entry. The XOP 2 handler restores PSEL state via the saved status register on `RTWP`.
-- A software vector holds an **address** — dereference it with `MOV @VEC,R0` / `CALL *R0`. Do not call the vector address directly.
-- `TEXT`/`BYTE` declarations must always be followed by `EVEN` before any `WORD` or code.
-- In the REL file format, a PREL with `field=0` means offset 0 within the module — it still needs `cmod` (module base) added during linking.
