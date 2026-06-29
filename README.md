@@ -96,85 +96,43 @@ PSEL is controlled via XOP 2. The XOP 2 handler sets/clears ST7 (the map enable 
 
 **Important:** With PSEL enabled (ST7=1), the processor is in **user mode**. Privileged instructions (`LWPI`, `LIMI`, `LST`) must only be executed with PSEL disabled or before PSEL is first enabled.
 
-## Overlay File Format
+## Output File Format — Shell V5.x EXE
 
-Overlay COM files use a pagemap header so the loader knows where to place the code:
+When overlays are linked with `-P#` flags, `link99` produces a single **EXE file** in Shell V5.x chain-block format. There are no separate overlay files — everything is in one EXE launched directly from the shell.
 
-```
-FFFF FFFF FFFF        opening sentinel (3 words)
-start  end   page     pagemap entry: virtual start, end, physical page
-FFFF FFFF FFFF        closing sentinel (3 words)
-size                  block size in bytes (1 word)
-[code bytes...]       overlay code
-```
+### Format Marker
 
-Example for OVLA (virtual 0x2000, physical page 2):
+The EXE file begins with `FFFF FFFF FFFF` (3 words). The shell uses this as a format marker to distinguish EXE files from flat COM binaries — if the first word is `0xFFFF` it is an EXE, otherwise it is a flat COM loaded at a fixed address. The EXE loader itself ignores the sentinel and goes straight to the chain blocks.
+
+### Chain Blocks
+
+After the sentinel the file consists of chain blocks, one per page:
 
 ```
-FFFF FFFF FFFF
-2000 2062 0002
-FFFF FFFF FFFF
-0062
-[62 hex bytes of code]
+[next_offset:word][page:word][start:word][size:word][data...]
 ```
 
-Overlays are assembled with `AORG` at the virtual address and linked with the `-P` flag:
+- `next_offset` — byte distance from this header to the next (0 = last block)
+- `page` — physical page number (0 = common memory, no mapper programming needed)
+- `start` — virtual load address
+- `size` — byte count of data following the header
+
+Large modules are automatically split into multiple blocks, each limited to `0x1F8` bytes (one 512-byte sector minus the 8-byte header) for Shell V5.8 loader compatibility.
+
+The loader reads two sectors into staging at `0x0500`, walks the chain, programs the mapper for each page>0 block, copies data to the virtual address, then follows `next_offset` to the next block. When `next_offset=0` it launches at the first block's start address.
+
+### Link Command
 
 ```
-r99  OVLA SCHCLC
-link99 -P2 ovla.COM ovla.R99       ; page 2
-link99 -P3 ovlb.COM ovlb.R99       ; page 3
-```
-
-## Loading Overlays — DOLOAD Shell Command
-
-The shell `LOAD` command reads a COM file into paged memory without executing it:
-
-```
-%LOAD OVLA.COM      → loads OVLA into physical page 2 at virtual 0x2000
-%LOAD OVLB.COM      → loads OVLB into physical page 3 at virtual 0x2000
-```
-
-DOLOAD:
-1. Parses filename from command line
-2. Opens file, reads to STAGING (`0x0500`)
-3. Parses pagemap header — gets segment, page, block size
-4. Calls `MAP_SET` to program the mapper
-5. Enables PSEL, copies code from STAGING to virtual address
-6. Disables PSEL, returns to shell
-
-## Linking a Program with Overlays — EXE Format
-
-When overlays are linked directly into an EXE (rather than loaded separately as COM files), the `link99` paged EXE format is used. The linker writes one chain block per page:
-
-```
-EXE CHAIN BLOCK pg=0 start=1000 size=...   ; main program + overlay manager
-EXE CHAIN BLOCK pg=2 start=2000 size=...   ; overlay A
-EXE CHAIN BLOCK pg=3 start=2000 size=...   ; overlay B
-```
-
-The shell EXE loader programs the mapper and copies each block to its virtual address automatically on launch.
-
-The link command for a program with two overlays and a separate overlay manager module:
-
-```
-link99 prog.exe -O0x1000 -P0 main.r99 ovlmgr.r99 -P2 ovla.r99 -P3 ovlb.r99
+link99 basic.exe -O0x1000 -P0 bascore.r99 ovlmgr.r99 -P2 basovl.r99 -P3 basmath.r99
 ```
 
 | Flag | Meaning |
 |------|---------|
-| `-O0x1000` | Sets `cbase=0x1000` for page-0 modules — required for correct external symbol resolution when `AORG 1000H` is used |
-| `-P0` | Tags page-0 modules — allows the linker to resolve `EXT`/`ENT` across them |
+| `-O0x1000` | Sets `cbase=0x1000` — required for correct external symbol resolution when `-P0` modules use `AORG 1000H` |
+| `-P0` | Tags modules as page-0 — allows the linker to resolve `EXT`/`ENT` across them |
 | `-P2` | Places overlay A at virtual `0x2000`, physical page 2 |
 | `-P3` | Places overlay B at virtual `0x2000`, physical page 3 |
-
-### Why `-O0x1000` Is Needed
-
-In page mode the linker sets `cbase=0`. Without `-O0x1000`, external symbols in a page-0 module assembled with `AORG 1000H` resolve to offsets from zero rather than from `0x1000`. `-O0x1000` corrects this so all page-0 modules resolve their external references against the correct runtime base address.
-
-### Why OVLMGR Has No AORG
-
-OVLMGR is assembled without an `AORG` directive, making it purely relocatable. The linker places it immediately after the main program in the page-0 segment. An `AORG 1000H` in OVLMGR would cause the linker to treat its entry point addresses as already-absolute and refuse to add the module offset, producing wrong call targets.
 
 ## Overlay Manager — OVLMGR
 
