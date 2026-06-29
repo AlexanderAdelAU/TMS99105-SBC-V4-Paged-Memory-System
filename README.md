@@ -26,7 +26,9 @@ The SBC uses a GAL22V10 (U44) as a page mapper providing:
 0x0230-0x04FF  Common Workspace, Command Line, FCB, Page Variables
 0x0280         Common Stack Pointer
 0x02A0         OVL_PRINT_VEC (overlay print callback vector)
-0x0500-0x06FF  STAGING buffer (sector I/O)
+0x0300-0x04FF  Loader area (free RAM after EXE launch)
+0x0500-0x08FF  EXE staging buffer (two sectors, 0x400 bytes)
+0x0900-0x0FFF  Free RAM (stack grows down from 0x1000)
 0x1000-0xCFFF  TPA — Paged Program Area (page 0 by default)
 0xD000         SHELL
 0xE000         BDOS
@@ -63,8 +65,7 @@ MAP_SET:
     LI   R12,MAP_WIN_BASE       ; CRU base
     SLA  R9,1                   ; segment * 2 = CRU bit offset
     A    R9,R12                 ; R12 = CRU address for this segment
-    SLA  R0,8                   ; MOVE PAGE FROM LOW BYTE TO HIGH BYTE
-                                ; (LDCR BYTE TRANSFER USES HIGH BYTE)
+    SLA  R0,8                   ; move page to high byte for LDCR
     LDCR R0,BYTEWIDE            ; program the mapper register
     RT
 ```
@@ -74,8 +75,7 @@ To read back a mapper register:
 ```asm
     LI   R12,OVL_CRU
     STCR R1,BYTEWIDE            ; page number in HIGH BYTE of R1
-    ; R1 high byte now contains current page — use directly with LDCR
-    ; DO NOT SLA R1,8 again — it's already in the high byte
+    ; DO NOT SLA R1,8 — result is already in the high byte
 ```
 
 ### PSEL Control
@@ -100,13 +100,9 @@ PSEL is controlled via XOP 2. The XOP 2 handler sets/clears ST7 (the map enable 
 
 When overlays are linked with `-P#` flags, `link99` produces a single **EXE file** in Shell V5.x chain-block format. There are no separate overlay files — everything is in one EXE launched directly from the shell.
 
-### Format Marker
+The shell identifies an EXE by its file type field in the FCB (`FTY`), not by reading the file contents. The EXE file itself contains **no sentinel or pagemap prefix** — it consists entirely of chain blocks from byte 0 (link99 v3.9.12+).
 
-The EXE file begins with `FFFF FFFF FFFF` (3 words). The shell uses this as a format marker to distinguish EXE files from flat COM binaries — if the first word is `0xFFFF` it is an EXE, otherwise it is a flat COM loaded at a fixed address. The EXE loader itself ignores the sentinel and goes straight to the chain blocks.
-
-### Chain Blocks
-
-After the sentinel the file consists of chain blocks, one per page:
+### Chain Block Format
 
 ```
 [next_offset:word][page:word][start:word][size:word][data...]
@@ -117,28 +113,51 @@ After the sentinel the file consists of chain blocks, one per page:
 - `start` — virtual load address
 - `size` — byte count of data following the header
 
-Large modules are automatically split into multiple blocks, each limited to `0x1F8` bytes (one 512-byte sector minus the 8-byte header) for Shell V5.8 loader compatibility.
+Large modules are automatically split into multiple blocks, each limited to `0x1F8` bytes (one 512-byte sector minus the 8-byte header) to keep chain arithmetic aligned to sector boundaries.
 
-The loader reads two sectors into staging at `0x0500`, walks the chain, programs the mapper for each page>0 block, copies data to the virtual address, then follows `next_offset` to the next block. When `next_offset=0` it launches at the first block's start address.
+### Loader Operation
+
+`LOADERCODE_EXE` is copied from the shell to `0x0300` (loader area) and executes from there:
+
+1. Clears all map registers to page 0
+2. Reads two sectors (`0x400` bytes) into staging at `0x0500`-`0x08FF`
+3. Walks the chain: for each block, programs the mapper if `page>0`, enables PSEL, copies `size` bytes from staging to `start`, disables PSEL
+4. If staging is exhausted mid-block, reloads one sector and continues
+5. If the next block header is beyond staging, reloads two sectors and repositions
+6. When `next_offset=0`, launches at the first block's `start` address
+
+There is no limit on the number of chain blocks — the loader handles arbitrary-length EXE files through its reload mechanism.
 
 ### Link Command
 
 ```
-link99 basic.exe -O0x1000 -P0 bascore.r99 ovlmgr.r99 -P2 basovl.r99 -P3 basmath.r99
+link99 prog.exe -O0x1000 -P0 main.r99 ovlmgr.r99 -P2 ovla.r99 -P3 ovlb.r99
 ```
 
 | Flag | Meaning |
 |------|---------|
 | `-O0x1000` | Sets `cbase=0x1000` — required for correct external symbol resolution when `-P0` modules use `AORG 1000H` |
-| `-P0` | Tags modules as page-0 — allows the linker to resolve `EXT`/`ENT` across them |
+| `-P0` | Tags page-0 modules — allows the linker to resolve `EXT`/`ENT` across them |
 | `-P2` | Places overlay A at virtual `0x2000`, physical page 2 |
 | `-P3` | Places overlay B at virtual `0x2000`, physical page 3 |
+
+### Why `-O0x1000` Is Needed
+
+In page mode the linker sets `cbase=0`. Without `-O0x1000`, external symbols in a page-0 module assembled with `AORG 1000H` resolve to offsets from zero rather than from `0x1000`. `-O0x1000` corrects this so all page-0 modules resolve their external references against the correct runtime base address.
+
+### Why OVLMGR Has No AORG
+
+OVLMGR is assembled without an `AORG` directive, making it purely relocatable. The linker places it immediately after the main program in the page-0 segment. An `AORG 1000H` in OVLMGR would cause the linker to treat its entry point addresses as already-absolute and refuse to add the module offset, producing wrong call targets.
+
+### EQU Constants and AORG
+
+**EQU constants defined before `AORG` are absolute.** EQU constants defined after `AORG` inherit the relocatable segment and will be treated as relocatable references by the linker — even if their value is a small integer. Always define overlay IDs and other small constants before the `AORG` directive.
 
 ## Overlay Manager — OVLMGR
 
 OVLMGR is a relocatable module linked with the main program in page 0. It manages swapping overlays into the fixed virtual slot at `0x2000`.
 
-### OVL_PAGES Table
+### Data
 
 ```asm
 OVL_PAGES:
@@ -148,9 +167,6 @@ OVL_PAGES:
 
 CURRENT_OVL:
     WORD  0         ; currently mapped overlay ID (0 = none)
-
-SAVE_R3:
-    WORD  0         ; R3 scratch save — no stack use during mapper programming
 ```
 
 ### OVLMGR_INIT
@@ -166,19 +182,18 @@ Call once at program startup:
 Call before each overlay function:
 
 ```asm
-    LI    R1,OVL_A         ; overlay ID (1=A, 2=B)
-    CALL  @OVLMGR          ; swap if needed, re-enables PSEL on return
+    LI    R1,1             ; overlay ID (1=A, 2=B) — use literal, not EQU after AORG
+    CALL  @OVLMGR          ; swap if needed, R1 preserved on return
 ```
 
-OVLMGR compares R1 to CURRENT_OVL — if already mapped, returns immediately. Otherwise it programs segment 2 with the new page. R1 is restored from CURRENT_OVL on return; R3 is saved to a scratch word to avoid any stack activity during the mapper programming window:
+OVLMGR compares R1 to CURRENT_OVL — if already mapped, returns immediately. Otherwise programs segment 2 with the new page. R1 is never written during the swap so it is preserved naturally. R0, R9, R12 are trashed:
 
 ```asm
 OVLMGR:
     C     R1,@CURRENT_OVL
     JEQ   OVLMGR_RET           ; already loaded
-    MOV   R1,@CURRENT_OVL      ; save overlay ID
-    MOV   R3,@SAVE_R3          ; save R3
-    MOV   R1,R3
+    MOV   R1,@CURRENT_OVL      ; record new overlay
+    MOV   R1,R3                ; R3 = overlay ID
     SLA   R3,1                 ; word offset into OVL_PAGES
     MOV   @OVL_PAGES(R3),R0    ; R0 = physical page number
     SLA   R0,8                 ; page to high byte for LDCR
@@ -188,8 +203,6 @@ OVLMGR:
     LDCR  R0,BYTEWIDE          ; program segment 2
     LI    R9,PSEL_EN
     PSEL  R9                   ; re-enable PSEL
-    MOV   @SAVE_R3,R3          ; restore R3
-    MOV   @CURRENT_OVL,R1      ; restore R1
 OVLMGR_RET:
     RET
 ```
@@ -198,22 +211,24 @@ OVLMGR_RET:
 
 ## Overlay Code Structure
 
-Each overlay is assembled at `AORG 2000H` with a fixed entry point table:
+Each overlay is assembled at `AORG 2000H` with a fixed entry point table at the start:
 
 ```asm
     AORG  2000H
 
-OVLA_FUNC1:  B  @OVLA_F1      ; 0x2000 — function 1 entry
+OVLA_FUNC1:  B  @OVLA_F1      ; 0x2000 — entry point 1
              NOP
-OVLA_FUNC2:  B  @OVLA_F2      ; 0x2004 — function 2 entry
+OVLA_FUNC2:  B  @OVLA_F2      ; 0x2004 — entry point 2
              NOP
 ```
+
+Fixed entry points allow the main program to call into overlays at known addresses without needing to know where the implementation code lives within the overlay.
 
 ## Calling Overlays from the Main Program
 
 ### Print Callback Vector
 
-Overlays cannot directly call routines in the main program since their addresses are not known at overlay assembly time. A callback vector in COMMON solves this:
+Overlays cannot directly call routines in the main program since their addresses are not known at overlay assembly time. A callback vector in common memory solves this:
 
 ```asm
 OVL_PRINT_VEC:  EQU  02A0H    ; page variables area
@@ -224,58 +239,46 @@ The main program installs the callback after `OVLMGR_INIT`:
 ```asm
     CALL  @OVLMGR_INIT
     LI    R0,PRINT
-    MOV   R0,@OVL_PRINT_VEC   ; store PRINT address in common vector
+    MOV   R0,@OVL_PRINT_VEC
 ```
 
-The overlay calls it via register indirect — **load the address first, then call through the register**:
+The overlay calls via register indirect:
 
 ```asm
-    MOV   @OVL_PRINT_VEC,R0   ; load PRINT address from vector
-    CALL  *R0                  ; call PRINT via register indirect
+    MOV   @OVL_PRINT_VEC,R0
+    CALL  *R0
 ```
 
-This is equivalent to a C function pointer: `(*print_func)(str)`.
-
-An alternative is a **trampoline** — store a `B` opcode and address at the vector location:
+An alternative is a **trampoline** at the vector address:
 
 ```
 02A0: 0460   ; B opcode
-02A2: xxxx   ; PRINT address
+02A2: xxxx   ; target address
 ```
 
-Then `CALL @0x02A0` jumps through the trampoline with a single indirection.
+Then `CALL @0x02A0` branches through in one indirection.
 
 ### CALL and RET
 
-Use `CALL` (XOP 6) and `RET` (XOP 7) throughout — they handle workspace and return address management correctly across paged boundaries:
+Use `CALL` (XOP 6) and `RET` (XOP 7) throughout:
 
 ```asm
     DXOP  CALL,6
     DXOP  RET,7
 
-    CALL  @OVLMGR             ; call overlay manager
-    CALL  @OVL_FUNC1          ; call overlay function at 0x2000
-```
-
-Overlays return with `RET`:
-
-```asm
-OVLA_F1:
-    LI    R1,TXT_OVLA1
-    MOV   @OVL_PRINT_VEC,R0
-    CALL  *R0
-    RET                        ; return to caller
+    CALL  @OVLMGR
+    CALL  @OVL_FUNC1
 ```
 
 ## Example Application
 
-The overlay mechanism scales naturally to larger programs. The BASIC99 interpreter for example splits across two overlays — I/O handling in page 2 and numeric expression evaluation in page 3 — giving it effectively 12KB of code space while launching as a single EXE from the shell. The interpreter core selects the appropriate overlay before each operation:
+The BASIC99 interpreter uses this mechanism to split across two overlays — I/O handling (PRINT, INPUT) in page 2 and numeric expression evaluation in page 3 — while the interpreter core and overlay manager share page 0. This gives the interpreter effectively 12KB of code space while launching as a single EXE from the shell:
 
 ```asm
-    LI    R1,OVL_B             ; select maths overlay
+    LI    R1,2             ; select maths overlay (page 3)
     CALL  @OVLMGR
-    MOV   R6,R1                ; R1 -> expression string
-    CALL  @OVL_EVAL            ; R0 = integer result
+    MOV   R6,R1            ; R1 -> expression string
+    CALL  @OVL_EVAL        ; R0 = integer result
 ```
 
 ## Complete Test Run
