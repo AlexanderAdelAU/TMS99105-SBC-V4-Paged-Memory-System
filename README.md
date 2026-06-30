@@ -1,15 +1,14 @@
 # TMS99105 SBC Transparent Paged Memory
 
+## Overview
+
+This document describes the overlay manager implementation for the TMS99105 SBC. Overlays allow programs larger than a single 4KB memory segment to run by swapping code segments in and out of a fixed virtual address window. This was developed as a proof of concept and stepping stone toward running the native C compiler, which is too large for a single segment or even a Basic Interpreter.  
 ![Paged Memory Mapper Schematic](Schematic.png)
 
 *Schematic showing the GAL22V10 (U44) page mapper, 6116 mapper RAM (IC4), 74LS157 segment address multiplexer (U26), and CRU interface (U31). Note: when PSEL_G is high, SA0-SA3 are forced low — all segments map to physical page 0.*
 
-## Overview
-
-This document describes the overlay manager implementation for the TMS99105 SBC. Overlays allow programs larger than a single 4KB memory segment to run by swapping code segments in and out of a fixed virtual address window. This was developed as a proof of concept and stepping stone toward running the native C compiler, which is too large for a single segment or even a Basic Interpreter.  
-
 ### Example Implementation using BASIC99
-elow is a diagram of how overlays are used on the SBC using this very mapper implementation. 
+Below is a diagram of how overlays are used on the SBC using this very mapper implementation. 
 
 ![Paged Memory Mapper Overlays](basic99_overlay_memory_architecture.png)
 
