@@ -9,7 +9,7 @@ This document describes the memory mapper implementation for a TMS99105 SBC. Mem
 </p>
 
 ## Memory Mapper Schematic 
-Most designs would just add a 74LS612 memory mapper, but you can build your own with just a 74LS157 multiplexer and a 6116 2k memory chip.  The 74LS157 multiplexes the different address lines depending on the state the memory mapper is in. There are two states one where the memory chip is programmed with the segment pages, and the other the other is to output the page number for a give segment via the upper address lines A0 to A3.   For this to be useful you must of course have physical memory my larger than the hardware limited 64k bytes. 
+Most designs would just add a 74LS612 memory mapper, but you can build your own with just a 74LS157 multiplexer and a 6116 2k memory chip.  The 74LS157 multiplexes the different address lines depending on the state the memory mapper is in. There are two states one where the memory chip is programmed with the segment pages, and the other the other is to output the page number for a given segment via the upper address lines A0 to A3.   For example the third memory address would hold the page number for segment 2 (0x2000-0x2FFF) - this page number can change when you need to swap in another page.    For this to be useful you must of course have physical memory my larger than the hardware limited 64k bytes. 
 
 <p align="center">
     <img src="Schematic.png" alt="Paged Memory Mapper Schematic" width="700">
