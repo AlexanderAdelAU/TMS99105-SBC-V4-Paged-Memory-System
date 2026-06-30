@@ -21,7 +21,7 @@ The SBC uses a GAL22V10 (U44) as a page mapper providing:
 
 The key design criteria for this memory mapper to work is to ensure that the addresses have enough time to get from the 6116 to the GAL during the memory cycle - this is done by allowing the true PSEL (from the CPU that derives the MAP_SEL), to to enable the 6116 as soon as ALATCH goes high and to use this to also derive a secondary PSEL_G signal that is delayed by one 16MHz clock cycle relative to the falling edge of the true PSEL.  This is achieved by clocking PSEL with an inverted ALATCH signal inside the GAL.  Thus while PSEL_G is high the paged address lines are clamped low and are become valid once PSEL_G goes low. 
 
-![Paged Memory Mapper Timing](PSEL_TIMING.pdf)
+![Paged Memory Mapper Timing](PSEL_TIMING.png)
 
 ### Memory Map
 
