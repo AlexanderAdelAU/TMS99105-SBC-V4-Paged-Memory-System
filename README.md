@@ -8,6 +8,12 @@
 
 This document describes the overlay manager implementation for the TMS99105 SBC. Overlays allow programs larger than a single 4KB memory segment to run by swapping code segments in and out of a fixed virtual address window. This was developed as a proof of concept and stepping stone toward running the native C compiler, which is too large for a single segment.
 
+## Page Mapper Timing 
+
+The key design criteria for this memory mapper to work is to ensure that the addresses have enough time to get from the 6116 to the GAL during the memory cycle - this is done by allowing the true PSEL (from the CPU that derives the MAP_SEL), to to enable the 6116 as soon as ALATCH goes high and to use this to also derive a secondary PSEL_G signal that is delayed by one 16MHz clock cycle relative to the falling edge of the true PSEL.  This is achieved by clocking PSEL with an inverted ALATCH signal inside the GAL.  Thus while PSEL_G is high the paged address lines are clamped low and are become valid once PSEL_G goes low. 
+
+![Paged Memory Mapper Timing](PSEL_TIMING.png)
+
 ## Hardware — GAL22V10 Page Mapper
 
 The SBC uses a GAL22V10 (U44) as a page mapper providing:
@@ -16,12 +22,6 @@ The SBC uses a GAL22V10 (U44) as a page mapper providing:
 - 16 physical pages × 4KB = 64KB physical RAM (from 512KB HM628512)
 - CRU-based programming via `LDCR`/`STCR` at `MAP_WIN_BASE = 0x80C0`
 - PSEL controlled via ST7 in the status register (set by XOP 2 handler)
-
-## Page Mapper Timing 
-
-The key design criteria for this memory mapper to work is to ensure that the addresses have enough time to get from the 6116 to the GAL during the memory cycle - this is done by allowing the true PSEL (from the CPU that derives the MAP_SEL), to to enable the 6116 as soon as ALATCH goes high and to use this to also derive a secondary PSEL_G signal that is delayed by one 16MHz clock cycle relative to the falling edge of the true PSEL.  This is achieved by clocking PSEL with an inverted ALATCH signal inside the GAL.  Thus while PSEL_G is high the paged address lines are clamped low and are become valid once PSEL_G goes low. 
-
-![Paged Memory Mapper Timing](PSEL_TIMING.png)
 
 ### Memory Map
 
