@@ -2,15 +2,17 @@
 
 ## Overview
 
-This document describes the overlay manager implementation for the TMS99105 SBC. Overlays allow programs larger than a single 4KB memory segment to run by swapping code segments in and out of a fixed virtual address window. This was developed as a proof of concept and stepping stone toward running the native C compiler, which is too large for a single segment or even a Basic Interpreter.  
-![Paged Memory Mapper Schematic](Schematic.png)
+This document describes the memory mapper implementation for a TMS99105 SBC. Memory Mappers allow access virtual memory through the use a technique that uses the large physical memory to appear as if it is available to the CPU limited 64k Bytes addressing range.  Memory is organised into 4k memory segments, but each of these segments, addressed using high memory bit A0 to A3 to access 16 pages at that segment address.   Thus say, segment 2 (0x2000) has 16 x 4k pages sitting behind it that can be mapped in and out as required.  This transparent mapping is the job of the Overlay Manager.  A vivid example how this works in the case of a BASIC99 Interpreter is shown in the diagram below.
 
+<p align="center">
+  <img src="basic99_overlay_memory_architecture.png" alt="Paged Memory Mapper Overlays" width="500">
+</p>
+
+## Memory Mapper Schematic 
+<p align="center">
+    <img src="Schematic.png" alt="Paged Memory Mapper Schematic" width="700">
+</p>
 *Schematic showing the GAL22V10 (U44) page mapper, 6116 mapper RAM (IC4), 74LS157 segment address multiplexer (U26), and CRU interface (U31). Note: when PSEL_G is high, SA0-SA3 are forced low — all segments map to physical page 0.*
-
-### Example Implementation using BASIC99
-Below is a diagram of how overlays are used on the SBC using this very mapper implementation. 
-
-![Paged Memory Mapper Overlays](basic99_overlay_memory_architecture.png)
 
 ## Page Mapper Timing 
 
@@ -278,36 +280,4 @@ Use `CALL` (XOP 6) and `RET` (XOP 7) throughout:
 
     CALL  @OVLMGR
     CALL  @OVL_FUNC1
-```
-
-## Example Application
-
-The BASIC99 interpreter uses this mechanism to split across two overlays — I/O handling (PRINT, INPUT) in page 2 and numeric expression evaluation in page 3 — while the interpreter core and overlay manager share page 0. This gives the interpreter effectively 12KB of code space while launching as a single EXE from the shell:
-
-```asm
-    LI    R1,2             ; select maths overlay (page 3)
-    CALL  @OVLMGR
-    MOV   R6,R1            ; R1 -> expression string
-    CALL  @OVL_EVAL        ; R0 = integer result
-```
-
-## Complete Test Run
-
-```
-%LOAD OVLA.COM
-Loaded
-%LOAD OVLB.COM
-Loaded
-%OVLTEST
-Overlay POC Test Starting
-Test 1: A.Func1 (first load)
-Overlay A - Function 1
-Test 2: B.Func1 (swap A->B)
-Overlay B - Function 1
-Test 3: A.Func2 (swap B->A)
-Overlay A - Function 2
-Test 4: A.Func1 (no swap)
-Overlay A - Function 1
-Overlay POC Test COMPLETE
-%
 ```
