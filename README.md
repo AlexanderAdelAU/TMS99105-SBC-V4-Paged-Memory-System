@@ -42,7 +42,9 @@ given segment on the upper address lines SA0 to SA3. For example, the third
 memory address holds the page number for segment 2 (`>2000`–`>2FFF`); this page
 number can change when you need to swap in another page. For this to be useful
 you must of course have physical memory much larger than the 64K bytes the CPU
-can address.
+can address.  In our case you can see that the memory chips being used are HN62B512 
+512K bytes resulting in the memory mapper segments each having access to 16 pages of 4k,
+or in total 16 segments * 16 pages * 4k bytes or 1M bytes of memory. 
 
 <p align="center">
     <img src="MemoryMapper.jpg" alt="Paged Memory Mapper Schematic" width="700">
