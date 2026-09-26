@@ -45,7 +45,7 @@ you must of course have physical memory much larger than the 64K bytes the CPU
 can address.
 
 <p align="center">
-    <img src="Schematic.png" alt="Paged Memory Mapper Schematic" width="700">
+    <img src="MemoryMapper.jpg" alt="Paged Memory Mapper Schematic" width="700">
 </p>
 
 *Schematic showing the GAL22V10 (U44) page mapper, 6116 mapper RAM (IC4),
