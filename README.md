@@ -325,7 +325,6 @@ Segments that an overlay does not use keep whatever was last mapped there
 ```asm
 MAP_WIN_BASE:   EQU  080C0H      ; CRU base for mapper registers
 BYTEWIDE:       EQU  2           ; CNT=2 = parallel byte transfer mode
-PSEL_EN:        EQU  0100H       ; non-zero = enable PSEL (any non-zero value)
 OVL_SEG:        EQU  2           ; minimal example below: overlay slot segment
 OVL_CRU:        EQU  MAP_WIN_BASE+(OVL_SEG*2)  ; = 0x80C4
 STAGING:        EQU  0500H       ; sector staging buffer
@@ -363,23 +362,24 @@ To read back a mapper register:
 
 ### Switching mapping on and off (PSEL)
 
-PSEL is controlled through XOPs, whose handlers set or clear ST7 (the map
-enable bit). The shell and SMALLC99 use two operand-free forms:
+PSEL is controlled through two operand-free XOPs, whose handlers set or clear
+ST7 (the map enable bit). Define them once at the top of the source:
 
 ```asm
     DXOP  PSEL_DIS,0            ; PSEL off - every segment shows page 0
     DXOP  PSEL_EN,1             ; PSEL on  - map registers apply
 ```
 
-XOP 2 does the same job with a register operand:
+and then each is one word, with no register to load or clobber:
 
 ```asm
-    LI   R9,PSEL_EN             ; any non-zero value
-    PSEL R9                     ; XOP 2 — sets ST7, enables mapping
-
-    CLR  R9
-    PSEL R9                     ; XOP 2 — clears ST7, disables mapping
+    PSEL_DIS                    ; disable mapping
+    PSEL_EN                     ; enable mapping
 ```
+
+`DXOP PSEL,2` (XOP 2, with a register operand: non-zero enables, zero
+disables) is **deprecated**. It costs an extra `LI`/`CLR` and a register every
+time; use `PSEL_DIS` and `PSEL_EN` instead.
 
 **Important:** XOP entry clears ST7-ST11. The PSEL handlers set ST7 via `ORI`
 on the saved status before `RTWP`, so PSEL state is correctly restored on
@@ -564,9 +564,13 @@ Call before each overlay function:
 
 OVLMGR compares R1 to CURRENT_OVL — if already mapped, returns immediately.
 Otherwise it programs segment 2 with the new page. R1 is never written during
-the swap so it is preserved naturally. R0, R3, R9, R12 are trashed:
+the swap so it is preserved naturally. R0, R3, R12 are trashed (R12 holds the
+CRU address for `LDCR`):
 
 ```asm
+    DXOP  PSEL_DIS,0
+    DXOP  PSEL_EN,1
+
 OVLMGR:
     C     R1,@CURRENT_OVL
     JEQ   OVLMGR_RET           ; already loaded
@@ -575,12 +579,10 @@ OVLMGR:
     SLA   R3,1                 ; word offset into OVL_PAGES
     MOV   @OVL_PAGES(R3),R0    ; R0 = physical page number
     SLA   R0,8                 ; page to high byte for LDCR
-    CLR   R9
-    PSEL  R9                   ; disable PSEL before programming mapper
+    PSEL_DIS                   ; disable PSEL before programming mapper
     LI    R12,OVL_CRU
     LDCR  R0,BYTEWIDE          ; program segment 2
-    LI    R9,PSEL_EN
-    PSEL  R9                   ; re-enable PSEL
+    PSEL_EN                    ; re-enable PSEL
 OVLMGR_RET:
     RET
 ```
