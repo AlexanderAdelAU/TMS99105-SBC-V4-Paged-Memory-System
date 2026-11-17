@@ -85,7 +85,7 @@ As used by Shell 6.5:
 0x00B0-0x012F  Interrupt Workspace (8 x 16 bytes)
 0x0130-0x022F  XOP Workspace (16 x 16 bytes)
 0x0230-0x024F  Shell workspace (R0-R15)
-0x0250         Command line
+0x0250         Command line (64 characters)
 0x0280         Common FCB
 0x02A0-0x02E7  Shell overlay variables (OVL_PRINT_VEC at 0x02A0)
 0x02E8         LGATE - launch gate:  PSEL on, branch to program
@@ -96,44 +96,52 @@ As used by Shell 6.5:
 0x0900-0x0FFF  Free RAM (stack grows down from 0x0FFE)
 0x1000-0xBFFF  TPA - Paged Program Area (page 0 by default); a .COM may
                also use 0xC000-0xDFFF, which the shell swaps to page 1
-0xC000         SHELL core (0xC000-0xD911)
-0xD000         Shell command window: DIR, TYPE, ERA ... each in its own page
+0xC000         SHELL core (0xC000-0xD911), page 0
+0xD000         Shell command window: DIR, TYPE, ERA ... each on its own
+               page of segment D, pages 2-10
 0xE000         BDOS
 0xF000         ROM / DISC_MONITOR
 ```
 
+Pages behind segments C and D:
+
+| Page | Segment C | Segment D |
+|------|-----------|-----------|
+| 0 | the shell | the shell |
+| 1 | the shell's private page for a `.COM` run | the same |
+| 2–10 | free while an EXE runs | **the shell's internal commands** — never write these |
+| 11–15 | free while an EXE runs | free while an EXE runs |
+
 The area `0x02A0`–`0x02FF` belongs to the shell. Applications must not store
-anything there (see [Calling between the program and its overlays](#calling-between-the-program-and-its-overlays)).
+anything there (see [Rules](#rules)).
 
 ## Part 2 — Example: the SMALLC99 compiler
 
+[SMALLC99](https://github.com/AlexanderAdelAU/SmallC99-TMS99105-Native-C-Compiler)
+is a Small-C compiler that runs on the SBC itself. It is the largest program
+using the mapper, and it uses it through **OVL99**, the overlay system shared
+with FileEdit and the SBC's own linker. This part describes what goes where and
+why. The reference for OVL99 itself — the runtime, the table, the map format
+and all the rules — is
+[OVL99.md](https://github.com/AlexanderAdelAU/TMS99105-Native-Toolchain/blob/main/OVL99.md).
+
 ### Why it needs the mapper
 
-SMALLC99 is a Small-C compiler that runs on the SBC itself. It is far too big
-to fit in 64K alongside the shell and the BDOS, so it is built as one
-**resident** part that is always present, plus seven **overlays** that take
-turns in a shared 16K **overlay window**.
+SMALLC99 is far too big to fit in 64K alongside the shell and the BDOS, so it
+is built as one **resident** part that is always present, plus eight
+**overlays** that take turns in a shared 16K **overlay window**.
 
 <p align="center">
   <img src="smallc99_memory_layout.svg" alt="SMALLC99 memory layout" width="600">
 </p>
 
-- **Segment 0** is common memory: the shell's workspace, the FCB, the gates
-  and the stack. It is always page 0, whatever PSEL says.
-- **Segments 1–7** hold the resident compiler (25,200 bytes) in page 0. These
-  map registers stay at 0, so the resident code is visible whether PSEL is on
-  or off.
-- **Segments 8–B** (`>8000`–`>BFFF`) are the overlay window. Whichever overlay
-  is active has its pages mapped here.
-- **Segments C–F** belong to the shell, the BDOS and the ROM. The loader
-  refuses to put any program code there.
-
-Compared with the minimal overlay manager in Part 3, SMALLC99 scales
-everything up: a four-segment window instead of one segment, overlays that span
-several pages, and overlays that call each other. This part describes what goes
-where and why. The mechanisms it relies on — programming map registers, the EXE
-file format, `link99 -P` and the overlay manager itself — are covered in
-[Part 3](#part-3--programming-and-using-the-mapper).
+| Region | Contents |
+|---|---|
+| Segment 0 | Common memory: the shell's workspace, the FCB, the gates and the stack. Always page 0, whatever PSEL says |
+| Segments 1–7 (`>1000`–`>7591`) | The resident compiler in page 0. These map registers stay at 0, so the resident code is visible whether PSEL is on or off |
+| `>7592`–`>7FFF` | The C run-time heap (file buffers) |
+| Segments 8–B (`>8000`–`>BFFF`) | The overlay window. Whichever overlay is active has its pages mapped here |
+| Segments C–F | The shell, the BDOS and the ROM. The loader refuses to put any program code there |
 
 ### What the parts of a compiler do
 
@@ -144,27 +152,30 @@ overlay does one of them:
 
 | Overlay | Stands for | What it compiles or does | Example source it handles |
 |---------|-----------|--------------------------|---------------------------|
-| 1 `EXPR` | **Expressions** | Operators, precedence, assignments, function calls, constants | `a = b + f(c) * 2` |
-| 2 `STMT` | **Statements** | Control flow: `if`, `while`, `do`, `for`, `switch`/`case`, `return`, `break`, `goto`, compound `{ }` blocks | `if (x > 0) y = 1;` |
+| 1 `EXPR` | **Expressions** | Operators, precedence, assignments, function calls, member access, constants | `a = b + f(c) * 2` |
+| 2 `STMT` | **Statements** | Control flow: `if`, `while`, `do`, `for`, `switch`/`case`, `return`, `break`, `goto`, compound `{ }` blocks, local declarations | `if (x > 0) y = 1;` |
 | 3 `DECL` | **Declarations** | Global and static variable declarations and their initial values | `int count; char buf[80];` |
-| 4 `PREP` | **Preprocessor** | `#define`, `#include`, `#if`/`#ifdef`, `#asm`, macro expansion, reading source lines | `#define TEN 10` |
+| 4 `PREP` | **Preprocessor** | Reading source lines, `#define`, `#include`, `#if`/`#ifdef`, `#asm`, macro expansion | `#define TEN 10` |
 | 5 `DFUN` | **Define function** | A function definition: its header, arguments and parameter declarations, then its body | `add(a, b) int a, b; { ... }` |
 | 6 `CGEN` | **Code generator** | Turns the compiler's internal operation codes into TMS9900 assembly text | (produces `MOV`, `A`, `BL` … lines) |
-| 7 `CLI` | **Command-line interface** | Reads the command line: source and output names, `-V` and other options | `SMALLC99 TEST -V` |
+| 7 `CLI` | **Command-line interface** | Reads the command line (source and output names, `-V` and other options) and reports errors | `SMALLC99 TEST -V` |
+| 8 `STRD` | **Struct declarations** | `struct`/`union` tags and member lists | `struct pt { int x, y; };` |
 
 The resident part holds everything the overlays share:
 
 | Resident module | What it does |
 |-----------------|--------------|
 | `SMALLC99.C` | The driver: `main()` calls the CLI, opens the files, runs the parse loop and closes up |
-| `CC_PORT.A99` | Startup: initialises the overlay manager and the trampoline stack in the right order |
+| `CC_PORT.A99` | Startup: initialises the overlay manager and the OVL99 frame stack in the right order |
 | `CC_RESIDENT.C` | The top-level parse loop, and the **bridge** functions overlays call to reach each other |
-| `CC_SCAN_SYM.C` | The scanner (reading characters and names from the current line), symbol table search and insertion, error reporting |
-| `CC_DATA.C` | Shared data: the symbol table (`symtab`, 3,520 bytes), literal pool (`litq`), operator tables, file units |
+| `CC_SCAN_SYM.C` | The scanner, symbol table search and insertion |
+| `CC_DATA.C` | Shared data: the symbol table, literal pool (`litq`), operator tables, file units |
 | `CC_CD99.C` | The output layer: `gen()` and the p-code staging buffer (`stage`, 400 words), module header and trailer |
-| `OVLMGR.A99` | The overlay manager |
-| `OVLSTUBS.A99`, `CLISTUB.A99` | The trampolines: the only code allowed to switch overlays mid-compile |
+| `OVLMGR.A99` | The overlay manager: maps one row of `OVL_TABLE` |
+| `OVCALL.A99` | The OVL99 call gate: the only code that switches overlays mid-compile |
 | `SPYOUT.A99` | Low-level text output (`pstr`, `pchar`, `pdec` …) |
+| `CC_STRU.A99` | `elsize()`, the size of a struct element |
+| `OVLGLUE.R99` | Written by the linker: `OVL_TABLE` and one 12-byte thunk per published entry |
 
 A **p-code** is one of the compiler's internal operation codes, such as "load
 a word from the stack" or "add the two working registers". The expression and
@@ -173,8 +184,28 @@ code generator later turns each p-code into real assembly lines.
 
 ### The overlay table
 
-Each overlay has a row in `OVLTABLE`, generated at build time, listing which
-physical page to map into each window segment:
+Each overlay has a row in `OVL_TABLE` listing which physical page to map into
+each window segment. Nobody writes the table by hand: the linker builds it from
+one declaration file, `OVLMAP.TXT`, with `link99 -YOVLMAP.TXT`:
+
+```
+# module    page  overlay  entries
+CC_EXPR_A    4    EXPR     R_EXPR=expression R_EXPRVAL=expression R_CEXPR=constexpr
+CC_EXPR_B    5    EXPR     R_TEST=test
+CC_EXPR_C    7    EXPR     -
+CC_EXPR_D    8    EXPR     -
+CC_STMT      3    STMT     R_STMT=statement
+CC_STMT_R   14    STMT     -
+CC_DECL      2    DECL     R_DODECL=dodeclare:tail
+...
+CC_CL99     12    CLI      R_GETOPTS=getoptions R_ERROR=errrep
+CC_STRD     15    STRD     R_STRUCT=dostruct
+guest CLI
+```
+
+Each line is one module: its physical page, the overlay it belongs to, and the
+entries other overlays may call. The segment is not in the map — it comes from
+the module's own `AORG` (`>8000` for segment 8, and so on). The result:
 
 <p align="center">
   <img src="smallc99_overlay_table.svg" alt="SMALLC99 overlay table" width="680">
@@ -193,41 +224,56 @@ main statements in `STMT` and the rest (`break`, `continue`, `goto`, labels,
 `switch` tables) in `STMT_R`. The preprocessor keeps its macro table in `MACS`
 on segment 9. The code generator puts its output routine and template table
 (`CG99`) in segment 8 and the code that fills the templates (`CG99T`) in
-segment 9. Every module fits in its 4K page; the largest uses 4,032 bytes.
+segment 9. Every module must fit in its 4K page; the build checks each one.
 
-The shell's command pages also live in pages 2–10, but only in segment D. The
-compiler only uses segments 8–B of those pages, so the two never share memory.
+Pages are per segment, so page 3 behind `>8000` and page 3 behind `>9000` are
+different memory. The shell's command pages are pages 2–10 of segment D only;
+the compiler uses segments 8–B, so the two never share memory.
 
 ### Calling between the program and its overlays
 
 Three kinds of call happen inside SMALLC99:
 
 1. **Overlay → resident.** Always allowed and always direct. The resident code
-   is permanently mapped in segments 1–7, and link99 resolves the addresses at
-   link time. No vectors in common memory are needed.
+   is permanently mapped in segments 1–7, and the linker resolves the addresses
+   at link time.
 2. **Within one overlay.** Always allowed and always direct, even between its
    different pages, because all of an overlay's pages are mapped together.
 3. **Overlay → a different overlay.** Never direct. The caller calls an
    ordinary-looking resident **bridge** function (`statement()`, `test()`,
-   `expression()`, `constexpr()`, `gen()` …). The bridge calls a **framed
-   trampoline** (`R_STMT`, `R_TEST`, `R_EXPRVAL`, `R_CEXPR`, `R_CCOUT` …),
-   which:
-   - pushes the caller's return word and the current owner onto `TRSTACK`
-   - calls `OVLMGR` to map the callee's overlay
-   - calls the callee's fixed entry point
-   - pops the frame and calls `OVLMGR` again to restore the caller's overlay
+   `expression()`, `constexpr()`, `gen()` …). The bridge calls the `R_` name
+   (`R_STMT`, `R_TEST`, `R_EXPRVAL`, `R_CEXPR`, `R_CCOUT` …), which is a
+   12-byte resident **thunk** the linker wrote:
+
+```
+overlay code           resident                                 overlay code
+  statement()  ──►  R_STMT thunk  ──►  OVCALL  ──►  map STMT  ──►  statement
+                    LI   R1,2            │ push return word + owner
+                    LI   R2,~statement   │ map callee, CALL it
+                    B    @OVCALL         │ pop, remap caller's whole overlay
+                                         ▼ return to caller
+```
+
+`OVCALL` pushes the caller's return word and the current window owner onto a
+16-frame stack, calls `OVLMGR` to map the callee's overlay, calls the callee,
+then pops the frame and maps the caller's **whole** overlay back. The C call
+frame and `R4` (the return value) pass through untouched.
 
 `OVLMGR` walks the overlay's table row and programs only the segments whose
 page actually changes, so returning to an overlay that is still partly mapped
 costs very little.
 
+The two top-level entries called from the resident parse loop, `R_DODECL` and
+`R_DOFN`, are `:tail` entries: the thunk maps the overlay and branches, with no
+frame, because nothing needs mapping back afterwards.
+
 ### Following one line through the window
 
 Compiling `if (a > f(b))` inside a function body shows every kind of call:
 
-| Step | What happens | Seg 8 | Seg 9 | Seg A | Seg B | `TRSTACK` |
-|------|--------------|-------|-------|-------|-------|-----------|
-| 1 | The resident parse loop finds a function and maps DFUN | DFUN | – | – | – | empty |
+| Step | What happens | Seg 8 | Seg 9 | Seg A | Seg B | OVCALL frames |
+|------|--------------|-------|-------|-------|-------|---------------|
+| 1 | The resident parse loop finds a function; `R_DOFN` maps DFUN and branches | DFUN | – | – | – | empty |
 | 2 | `dofunction()` calls `statement()` → `R_STMT` | STMT | STMT_R | – | – | DFUN |
 | 3 | `doif()` calls `test()` → `R_TEST`; all four expression pages appear | EXPR_A | EXPR_B | EXPR_C | EXPR_D | DFUN, STMT |
 | 4 | `callfunc()` parses `f(b)` via `expression()` → `R_EXPRVAL`; same overlay, so no mapper writes | EXPR_A | EXPR_B | EXPR_C | EXPR_D | DFUN, STMT, EXPR |
@@ -239,23 +285,37 @@ Compiling `if (a > f(b))` inside a function body shows every kind of call:
 Segments that an overlay does not use keep whatever was last mapped there
 (steps 5, 7 and 8). That is harmless, because no code runs from them.
 
-### Rules the build enforces
+### Rules
 
-- **Segment 8 is the owner.** Every overlay maps segment 8 first, and the word
-  `CUR_WINA_ID` always names that overlay; the trampolines save and restore it.
-  This is why CGEN occupies segments 8 and 9: when it once sat in A and B, it
-  ran while the window still claimed to belong to EXPR. CLI is the one
-  documented exception, because it runs only once, before compiling starts.
-- **`TRSTACK` holds 16 frames**, one per live call between overlays
+**Checked by the linker** (`link99 -Y` refuses the link, with the reason):
+
+- **Segment 8 is the owner.** Every overlay maps segment 8 first, and
+  `CUR_WINA_ID` always names the overlay that last mapped it; `OVCALL` saves
+  and restores it. This is why CGEN occupies segments 8 and 9: when it once sat
+  in A and B, it ran while the window still claimed to belong to EXPR.
+- **CLI is a guest.** It maps segment A only and never becomes the owner
+  (`guest CLI` in the map). That is safe only because SMALLC99's `OVCALL`
+  always takes a frame, so the caller's whole row is mapped back when CLI
+  returns. (FileEdit's `OVCALL` has a fast path for "callee already owns the
+  window"; a program with a guest overlay must not use it.)
+- An overlay's segments are contiguous and inside `>8000`–`>BFFF`; no
+  (segment, page) pair is used twice; every module named in the map is linked
+  and exports every routine the map names.
+- No resident module may sit above the overlays. A library member that the
+  linker pulls in after the overlay modules would land above them, so the
+  libraries are named before the overlays, or contribute nothing new there.
+
+**Yours to keep:**
+
+- **The frame stack holds 16 frames**, one per live call between overlays
   (statement nesting × expression nesting). On overflow the compiler prints
   `>DEAD` and stops.
-- **Never pass a pointer to an overlay's own static data through a
-  trampoline.** The callee may map over it, and a store through that pointer
-  lands in the callee's code. Use a stack variable and copy the result back
-  afterwards.
+- **Never pass a pointer to an overlay's own static data through a thunk.**
+  The callee may map over it, and a store through that pointer lands in the
+  callee's code. Use a resident buffer or a stack variable.
 - **Keep application vectors out of common memory.** `0x02A0`–`0x02FF` belongs
   to the shell. An early SMALLC99 build stored trampoline vectors at `0x02A2`
-  and silently corrupted the shell's overlay variables. Any table overlays need
+  and silently corrupted the shell's overlay variables. Anything overlays need
   belongs in the program's resident segments, which overlays can always reach.
 
 ## Part 3 — Programming and using the mapper
@@ -348,14 +408,16 @@ Use `CALL` (XOP 6) and `RET` (XOP 7) throughout:
 
 ### Packaging a program: the EXE file
 
-When overlays are linked with `-P#` flags, `link99` produces a single **EXE
+A program that uses pages other than page 0 is linked into a single **EXE
 file** in the shell's chain-block format. There are no separate overlay files —
 everything is in one EXE launched directly from the shell.
 
-The shell identifies an EXE by its file type field in the FCB (`FTY`), not by
-reading the file contents. The EXE file itself contains **no sentinel or
-pagemap prefix** — it consists entirely of chain blocks from byte 0 (link99
-v3.9.12+).
+The shell picks the EXE loader by the file's **type** in the directory (type
+2), not by its extension or contents. XMODEM sets the type when it receives a
+`.EXE`. A program that writes an EXE itself (the SBC's LINK99) must set byte 11
+of the FCB to 2 **after** MAKE (which clears it) and before CLOSE. A file of
+type 0 is run as a `.COM` and does nothing useful. The EXE contains no sentinel
+or pagemap prefix — it consists entirely of chain blocks from byte 0.
 
 #### Chain Block Format
 
@@ -384,50 +446,75 @@ from there:
 4. Refuses any block that starts at or runs past `0xC000` (shell, BDOS, ROM)
 5. If staging is exhausted mid-block, reloads one sector and continues
 6. If the next block header is beyond staging, reloads two sectors and repositions
-7. When `next_offset=0`, sets `FREEMEM` and `MEMLIMIT`, enables PSEL and
-   launches at the first block's `start` address
+7. When `next_offset=0`, sets `FREEMEM` (the end of the page-0 blocks, where the
+   heap starts) and `MEMLIMIT` (the lowest paged segment, where the heap must
+   stop), enables PSEL and launches at the first block's `start` address
 
 There is no limit on the number of chain blocks — the loader handles
 arbitrary-length EXE files through its reload mechanism. The loader maps each
 block's **starting** segment only. Page-0 blocks may cross 4K boundaries freely,
 since they need no mapping, but a block for any other page must stay inside
 one segment. Keeping each overlay module within its own 4K page guarantees
-this.
+this, and the linker checks it.
 
 A program returns to the shell by jumping to `0x0080`, which leads through the
 return gate: PSEL off, then all sixteen map registers back to page 0.
 
-#### Link Command
+#### Linking an EXE
+
+There are two ways to tell `link99` which page a module goes on.
+
+**With an overlay map (`-Y`)** — the normal way, used by SMALLC99, FileEdit
+and the SBC's LINK99. The pages come from the map; the linker also writes
+`OVL_TABLE` and the call thunks, and checks the rules in
+[Part 2](#rules). Resident modules first, then libraries, then the overlay
+modules, with no `-P`:
 
 ```
-link99 prog.exe -O0x1000 -P0 main.r99 ovlmgr.r99 -P2 ovla.r99 -P3 ovlb.r99
+link99 -O1000 -S -YHELLOMAP.TXT HELLO.EXE STARTUP.R99 MAIN.R99 OVLMGR.R99 OVCALL.R99 CONOUT.R99 CALL.R99 OVLHELLO.R99 OVLGRET2.R99 OVLBYE.R99 CLIB99.LIB
+```
+
+This is the OVL99 hello demo
+([`link99/tests/ovly`](https://github.com/AlexanderAdelAU/TMS99105-Native-Toolchain/tree/main/link99/tests/ovly)),
+the smallest complete example. See
+[OVL99.md](https://github.com/AlexanderAdelAU/TMS99105-Native-Toolchain/blob/main/OVL99.md)
+for the map format and the runtime.
+
+**By hand (`-P#`)** — each `-P#` puts the module(s) after it on physical page
+`#`, at the address set by their own `AORG`. You supply the table and the calls
+yourself, as in the minimal overlay manager below:
+
+```
+link99 -O1000 -M prog.EXE main.R99 ovlmgr.R99 -P2 ovla.R99 -P3 ovlb.R99
 ```
 
 | Flag | Meaning |
 |------|---------|
-| `-O0x1000` | Sets `cbase=0x1000` — required for correct external symbol resolution when `-P0` modules use `AORG 1000H` |
-| `-P0` | Tags page-0 modules — allows the linker to resolve `EXT`/`ENT` across them |
-| `-P2` | Places the following module(s) on physical page 2, at the address set by their `AORG` |
-| `-P3` | Places the following module(s) on physical page 3 |
+| `-O1000` | Sets the code base to `>1000`, the start of the TPA, for the relocatable (resident) modules |
+| `-Y<map>` | Reads the overlay map: pages, `OVL_TABLE`, thunks, rule checks |
+| `-P#` | Places the following module(s) on physical page `#` |
+| `-M` | Prints the link listing (where every module and reference went) |
 
-SMALLC99's own link line follows the same pattern: the resident modules
-first, then one `-P` flag per overlay module (`-P2 CC_DECL.R99 -P9 CC_PREP.R99`
-and so on — see the overlay table in Part 2).
+**On the SBC.** The same link can be done on the board by the native LINK99,
+which reads the same map and writes a byte-identical EXE. The arguments go in a
+file (the command line holds only 64 characters):
 
-#### Why `-O0x1000` Is Needed
+```
+LINK99 @HELLO.LNK
+```
 
-In page mode the linker sets `cbase=0`. Without `-O0x1000`, external symbols in
-a page-0 module assembled with `AORG 1000H` resolve to offsets from zero rather
-than from `0x1000`. `-O0x1000` corrects this so all page-0 modules resolve
-their external references against the correct runtime base address.
+See the [toolchain README](https://github.com/AlexanderAdelAU/TMS99105-Native-Toolchain)
+for the native tools, and PACK99/UNPACK for sending all the object files in one
+XMODEM download.
 
 #### Why OVLMGR Has No AORG
 
 OVLMGR is assembled without an `AORG` directive, making it purely relocatable.
-The linker places it immediately after the main program in the page-0 segment.
-An `AORG 1000H` in OVLMGR would cause the linker to treat its entry point
+The linker places it with the other resident modules from `>1000` up. An
+`AORG 1000H` in OVLMGR would cause the linker to treat its entry point
 addresses as already-absolute and refuse to add the module offset, producing
-wrong call targets.
+wrong call targets. Only overlay modules carry an `AORG` — it is what tells the
+linker which segment they occupy.
 
 #### EQU Constants and AORG
 
@@ -438,11 +525,13 @@ define overlay IDs and other small constants before the `AORG` directive.
 
 ### Writing an overlay manager
 
-The simplest useful overlay manager swaps one overlay at a time into a single
-fixed segment. This example uses segment 2 (`0x2000`); it shows the principle
-that SMALLC99's larger manager builds on. SMALLC99's version (Part 2) is the
-same idea driven by a table: several segments per overlay, and trampolines for
-calls between overlays.
+For a real program, use OVL99: its `OVLMGR.A99` and `OVCALL.A99` are in the
+[toolchain](https://github.com/AlexanderAdelAU/TMS99105-Native-Toolchain), and
+the linker writes the rest. The minimal manager below shows the principle they
+build on: it swaps one overlay at a time into a single fixed segment, here
+segment 2 (`0x2000`), linked by hand with `-P2` and `-P3`. OVL99 is the same
+idea driven by a table: several segments per overlay, and a call gate that maps
+the caller back when an overlay calls another.
 
 #### Data
 
